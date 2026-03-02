@@ -80,7 +80,11 @@ export default function Settings() {
       setUserProfile(response.data);
       setAppName(response.data.app_name || 'SafeGuard');
       setSelectedIcon(response.data.app_logo || 'shield');
-      if (response.data.profile_photo_url) setProfilePhoto(response.data.profile_photo_url);
+      if (response.data.profile_photo_url) {
+        const photoUrl = response.data.profile_photo_url;
+        // Prepend backend URL if it's a relative path
+        setProfilePhoto(photoUrl.startsWith('http') ? photoUrl : `${BACKEND_URL}${photoUrl}`);
+      }
       
       // Load emergency contacts
       if (response.data.emergency_contacts && response.data.emergency_contacts.length > 0) {
@@ -132,7 +136,7 @@ export default function Settings() {
         mime_type: 'image/jpeg',
       }, { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 });
 
-      setProfilePhoto(response.data.photo_url);
+      setProfilePhoto(response.data.photo_url.startsWith('http') ? response.data.photo_url : `${BACKEND_URL}${response.data.photo_url}`);
       Alert.alert('Success', 'Profile photo updated! Security agents can now identify you.');
     } catch (error: any) {
       console.error('[Settings] Photo upload error:', error?.response?.data || error?.message);
