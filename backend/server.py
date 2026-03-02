@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Body, Query
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -373,11 +374,30 @@ class ProfilePhotoUpdate(BaseModel):
 async def update_profile_photo(data: ProfilePhotoUpdate, user = Depends(get_current_user)):
     """Upload and update user profile photo"""
     try:
-        import base64
-        img_bytes = base64.b64decode(data.photo_data)
+        import base64 as b64lib
+        import uuid as uuidlib
+        from services import ROOT_DIR
+        
+        # Strip data URI prefix if present
+        photo_data = data.photo_data
+        if ',' in photo_data and photo_data.startswith('data:'):
+            photo_data = photo_data.split(',', 1)[1]
+        
+        img_bytes = b64lib.b64decode(photo_data)
         if len(img_bytes) > 5 * 1024 * 1024:  # 5MB limit
             raise HTTPException(status_code=400, detail="Image too large (max 5MB)")
-        photo_url = f"data:{data.mime_type};base64,{data.photo_data}"
+        
+        # Save to disk
+        photos_dir = ROOT_DIR / 'uploads' / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        
+        ext = 'jpg' if 'jpeg' in (data.mime_type or 'jpeg') else 'png'
+        filename = f"profile_{str(user['_id'])}_{uuidlib.uuid4().hex[:8]}.{ext}"
+        file_path = photos_dir / filename
+        with open(file_path, 'wb') as f:
+            f.write(img_bytes)
+        
+        photo_url = f"/api/media/photos/{filename}"
         await db.users.update_one(
             {'_id': user['_id']},
             {'$set': {'profile_photo_url': photo_url, 'profile_photo_updated_at': datetime.utcnow()}}
@@ -387,7 +407,7 @@ async def update_profile_photo(data: ProfilePhotoUpdate, user = Depends(get_curr
         raise
     except Exception as e:
         logger.error(f"Error updating profile photo: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update profile photo")
+        raise HTTPException(status_code=500, detail=f"Failed to update profile photo: {str(e)}")
 
 @api_router.put("/user/customize-app")
 async def customize_app(customization: AppCustomization, user = Depends(get_current_user)):
@@ -929,6 +949,32 @@ async def track_user(user_id: str, user = Depends(get_current_user)):
         logger.error(f"Error tracking user: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@api_router.get("/security/escort-sessions")
+async def get_escort_sessions(user = Depends(get_current_user)):
+    """Get all active escort sessions for security/admin to monitor GPS routes"""
+    if user.get('role') not in ['security', 'admin']:
+        raise HTTPException(status_code=403, detail="Security or admin users only")
+    
+    sessions = await db.escort_sessions.find({'is_active': True}).sort('started_at', -1).to_list(50)
+    result = []
+    for s in sessions:
+        user_info = await db.users.find_one({'_id': ObjectId(s['user_id'])})
+        if not user_info:
+            user_info = {}
+        latest_loc = s.get('locations', [])[-1] if s.get('locations') else None
+        result.append({
+            'session_id': str(s['_id']),
+            'user_name': user_info.get('full_name') or user_info.get('email', 'Unknown'),
+            'user_email': user_info.get('email', ''),
+            'user_phone': user_info.get('phone', ''),
+            'started_at': s.get('started_at'),
+            'latitude': latest_loc['latitude'] if latest_loc else None,
+            'longitude': latest_loc['longitude'] if latest_loc else None,
+            'location_count': len(s.get('locations', [])),
+            'route': s.get('locations', [])[-20:],  # Last 20 GPS points
+        })
+    return result
+
 @api_router.get("/security/nearby-panics")
 async def get_nearby_panics(user = Depends(get_current_user)):
     if user.get('role') != 'security':
@@ -979,8 +1025,8 @@ async def get_nearby_panics(user = Depends(get_current_user)):
         
         result.append({
             'id': str(p['_id']),
-            'user_name': user_info.get('full_name') or user_info.get('email', 'Unknown'),
-            'full_name': user_info.get('full_name', ''),
+            'user_name': (user_info.get('full_name') or '').strip() or user_info.get('email', 'Unknown'),
+            'full_name': (user_info.get('full_name') or '').strip(),
             'user_email': user_info.get('email', 'Unknown'),
             'user_phone': user_info.get('phone', ''),
             'activated_at': p.get('activated_at'),
@@ -2174,6 +2220,25 @@ async def admin_send_message(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ===== MEDIA FILE SERVING =====
+@app.get("/api/media/{folder}/{filename}")
+async def serve_media_file(folder: str, filename: str):
+    """Serve uploaded media files (videos, photos) without requiring auth"""
+    from services import ROOT_DIR
+    file_path = ROOT_DIR / 'uploads' / folder / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    # Determine content type
+    suffix = file_path.suffix.lower()
+    content_types = {
+        '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.avi': 'video/x-msvideo',
+        '.webm': 'video/webm', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+        '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav',
+    }
+    media_type = content_types.get(suffix, 'application/octet-stream')
+    return FileResponse(str(file_path), media_type=media_type)
 
 # Include router
 app.include_router(api_router)
