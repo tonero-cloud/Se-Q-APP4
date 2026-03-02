@@ -40,11 +40,14 @@ export default function ReportList() {
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [videoLoading, setVideoLoading] = useState(true);
   const [videoError, setVideoError] = useState(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       loadReports();
       loadPendingReports();
+      // Load token for video playback headers
+      getAuthToken().then(t => setAuthToken(t));
       return () => {
         if (currentSound) {
           currentSound.unloadAsync();
@@ -363,7 +366,7 @@ export default function ReportList() {
             <View style={styles.videoErrorContainer}>
               <Ionicons name="cloud-offline-outline" size={60} color="#64748B" />
               <Text style={styles.videoErrorTitle}>Video Unavailable</Text>
-              <Text style={styles.videoErrorText}>This video may still be processing. Please try again in a few minutes.</Text>
+              <Text style={styles.videoErrorText}>This video could not be played. It may still be processing — please try again in a moment.</Text>
               <TouchableOpacity style={styles.videoRetryBtn} onPress={() => { setVideoError(false); setVideoLoading(true); }}>
                 <Ionicons name="refresh" size={18} color="#fff" />
                 <Text style={styles.videoRetryText}>Retry</Text>
@@ -371,7 +374,10 @@ export default function ReportList() {
             </View>
           ) : (
             <Video
-              source={{ uri: selectedVideo }}
+              source={{ 
+                uri: selectedVideo,
+                headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined
+              }}
               style={styles.video}
               useNativeControls
               resizeMode={ResizeMode.CONTAIN}
@@ -379,7 +385,11 @@ export default function ReportList() {
               isLooping={false}
               onReadyForDisplay={() => setVideoLoading(false)}
               onLoad={() => setVideoLoading(false)}
-              onError={() => { setVideoLoading(false); setVideoError(true); }}
+              onError={(err) => { 
+                console.error('[VideoPlayer] Error:', err);
+                setVideoLoading(false); 
+                setVideoError(true); 
+              }}
             />
           )}
         </View>
