@@ -303,7 +303,9 @@ export default function Escort() {
                 <Text style={styles.gpsWaitingText}>Acquiring location...</Text>
               )}
               <Text style={styles.gpsNoteText}>Location logged to server every 1 minute</Text>
-            </View> 
+            </View>
+
+            <TouchableOpacity 
               style={styles.arrivedButton}
               onPress={stopEscort}
               disabled={loading}
