@@ -93,10 +93,9 @@ export default function Index() {
         return;
       }
       if (pin === savedPin) {
-        // ✅ Correct PIN
-        await AsyncStorage.removeItem('active_panic');
+        // ✅ Correct PIN — navigate to panic-active so "I'm Safe Now" is accessible
         setPinInput(''); setPinError('');
-        router.replace('/civil/home');
+        router.replace('/civil/panic-active');
       } else {
         // ❌ Wrong PIN → disguise game
         setPinAttempts(a => a + 1);
