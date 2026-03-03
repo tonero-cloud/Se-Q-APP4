@@ -1,5 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Body, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Body, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -1348,17 +1348,34 @@ async def admin_login(login_data: AdminLogin):
         'role': 'admin'
     }
 
+async def _log_admin_action(admin_id: str, action: str, target_type: str, target_id: str, details: dict = None):
+    """Log every admin action to immutable audit log"""
+    try:
+        await db.admin_audit_log.insert_one({
+            'admin_id': admin_id,
+            'action': action,
+            'target_type': target_type,
+            'target_id': target_id,
+            'details': details or {},
+            'timestamp': datetime.utcnow()
+        })
+    except Exception as e:
+        logger.error(f"Audit log error: {e}")
+
 @api_router.get("/admin/dashboard")
 async def admin_dashboard(user: dict = Depends(get_admin_user)):
-    """Get admin dashboard statistics"""
+    """Get enhanced admin dashboard statistics"""
     total_users = await db.users.count_documents({})
     civil_users = await db.users.count_documents({'role': 'civil'})
     security_users = await db.users.count_documents({'role': 'security'})
-    admin_users = await db.users.count_documents({'role': 'admin'})
+    premium_users = await db.users.count_documents({'is_premium': True})
+    flagged_users = await db.users.count_documents({'is_flagged': True})
     
     active_panics = await db.panic_events.count_documents({'is_active': True})
     total_panics = await db.panic_events.count_documents({})
+    false_alarms = await db.panic_events.count_documents({'is_false_alarm': True})
     total_reports = await db.civil_reports.count_documents({})
+    active_escorts = await db.escort_sessions.count_documents({'is_active': True})
     
     # Recent activity (last 24 hours)
     yesterday = datetime.utcnow() - timedelta(hours=24)
@@ -1366,19 +1383,59 @@ async def admin_dashboard(user: dict = Depends(get_admin_user)):
     recent_reports = await db.civil_reports.count_documents({'created_at': {'$gte': yesterday}})
     new_users = await db.users.count_documents({'created_at': {'$gte': yesterday}})
     
+    # Average response time (resolved panics with known duration)
+    resolved = await db.panic_events.find({
+        'is_active': False, 'deactivated_at': {'$exists': True}, 'activated_at': {'$exists': True}
+    }).to_list(100)
+    avg_response_mins = 0
+    if resolved:
+        durations = []
+        for p in resolved:
+            try:
+                dur = (p['deactivated_at'] - p['activated_at']).total_seconds() / 60
+                if 0 < dur < 120:
+                    durations.append(dur)
+            except: pass
+        if durations:
+            avg_response_mins = round(sum(durations) / len(durations), 1)
+
+    # Panic breakdown by category (last 30 days)
+    thirty_days = datetime.utcnow() - timedelta(days=30)
+    panic_pipeline = [
+        {'$match': {'activated_at': {'$gte': thirty_days}}},
+        {'$group': {'_id': '$emergency_category', 'count': {'$sum': 1}}},
+        {'$sort': {'count': -1}}
+    ]
+    category_breakdown = []
+    async for doc in db.panic_events.aggregate(panic_pipeline):
+        category_breakdown.append({'category': doc['_id'] or 'other', 'count': doc['count']})
+
+    # Reports by status
+    pending_reports = await db.civil_reports.count_documents({'status': {'$in': [None, 'new']}})
+    under_review = await db.civil_reports.count_documents({'status': 'under_review'})
+    resolved_reports = await db.civil_reports.count_documents({'status': 'resolved'})
+
     return {
         'total_users': total_users,
         'civil_users': civil_users,
         'security_users': security_users,
-        'admin_users': admin_users,
+        'premium_users': premium_users,
+        'flagged_users': flagged_users,
         'active_panics': active_panics,
         'total_panics': total_panics,
+        'false_alarms': false_alarms,
         'total_reports': total_reports,
+        'active_escorts': active_escorts,
+        'avg_response_mins': avg_response_mins,
+        'pending_reports': pending_reports,
+        'under_review_reports': under_review,
+        'resolved_reports': resolved_reports,
         'recent_24h': {
             'panics': recent_panics,
             'reports': recent_reports,
             'new_users': new_users
-        }
+        },
+        'category_breakdown': category_breakdown
     }
 
 @api_router.get("/admin/users")
@@ -1388,6 +1445,36 @@ async def admin_get_users(
     limit: int = 50,
     user: dict = Depends(get_admin_user)
 ):
+    """Get all users with optional role filter"""
+    query = {}
+    if role:
+        query['role'] = role
+    
+    users = await db.users.find(query).skip(skip).limit(limit).to_list(length=limit)
+    total = await db.users.count_documents(query)
+    
+    return {
+        'users': [{
+            'id': str(u['_id']),
+            'email': u.get('email'),
+            'full_name': u.get('full_name', ''),
+            'phone': u.get('phone', ''),
+            'role': u.get('role'),
+            'security_sub_role': u.get('security_sub_role'),
+            'team_name': u.get('team_name', ''),
+            'is_active': u.get('is_active', True),
+            'is_premium': u.get('is_premium', False),
+            'is_flagged': u.get('is_flagged', False),
+            'flag_reason': u.get('flag_reason', ''),
+            'is_verified': u.get('is_verified', False),
+            'profile_photo_url': u.get('profile_photo_url'),
+            'status': u.get('status', 'offline'),
+            'created_at': u.get('created_at', datetime.utcnow()).isoformat()
+        } for u in users],
+        'total': total,
+        'skip': skip,
+        'limit': limit
+    }
     """Get all users with optional role filter"""
     query = {}
     if role:
@@ -1427,8 +1514,86 @@ async def admin_toggle_user(user_id: str, user: dict = Depends(get_admin_user)):
         {'_id': ObjectId(user_id)},
         {'$set': {'is_active': new_status}}
     )
-    
+    await _log_admin_action(str(user['_id']), 'toggle_user', 'user', user_id, {'new_status': new_status})
     return {'message': f"User {'activated' if new_status else 'deactivated'}", 'is_active': new_status}
+
+@api_router.put("/admin/users/{user_id}/flag")
+async def admin_flag_user(user_id: str, reason: str = Body(...), user: dict = Depends(get_admin_user)):
+    """Flag/unflag a user for suspicious activity"""
+    target_user = await db.users.find_one({'_id': ObjectId(user_id)})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    currently_flagged = target_user.get('is_flagged', False)
+    await db.users.update_one(
+        {'_id': ObjectId(user_id)},
+        {'$set': {'is_flagged': not currently_flagged, 'flag_reason': reason if not currently_flagged else ''}}
+    )
+    await _log_admin_action(str(user['_id']), 'flag_user' if not currently_flagged else 'unflag_user', 'user', user_id, {'reason': reason})
+    return {'is_flagged': not currently_flagged}
+
+@api_router.put("/admin/users/{user_id}/premium")
+async def admin_toggle_premium(user_id: str, user: dict = Depends(get_admin_user)):
+    """Manually toggle a user's premium status"""
+    target_user = await db.users.find_one({'_id': ObjectId(user_id)})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_premium = not target_user.get('is_premium', False)
+    await db.users.update_one(
+        {'_id': ObjectId(user_id)},
+        {'$set': {'is_premium': new_premium}}
+    )
+    await _log_admin_action(str(user['_id']), 'toggle_premium', 'user', user_id, {'is_premium': new_premium})
+    return {'is_premium': new_premium}
+
+@api_router.put("/admin/users/{user_id}/verify")
+async def admin_verify_user(user_id: str, user: dict = Depends(get_admin_user)):
+    """Verify a user's identity"""
+    target_user = await db.users.find_one({'_id': ObjectId(user_id)})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_verified = not target_user.get('is_verified', False)
+    await db.users.update_one(
+        {'_id': ObjectId(user_id)},
+        {'$set': {'is_verified': new_verified}}
+    )
+    await _log_admin_action(str(user['_id']), 'verify_user', 'user', user_id, {'is_verified': new_verified})
+    return {'is_verified': new_verified}
+
+@api_router.get("/admin/users/{user_id}/timeline")
+async def admin_user_timeline(user_id: str, user: dict = Depends(get_admin_user)):
+    """Get a user's full activity timeline"""
+    events = []
+    # Panics
+    panics = await db.panic_events.find({'user_id': user_id}).sort('activated_at', -1).to_list(50)
+    for p in panics:
+        events.append({
+            'type': 'panic', 'icon': 'alert-circle', 'color': '#EF4444',
+            'title': f"Panic Activated — {(p.get('emergency_category') or 'other').title()}",
+            'timestamp': p.get('activated_at', datetime.utcnow()).isoformat(),
+            'detail': 'Resolved' if not p.get('is_active') else 'Still Active',
+            'is_false_alarm': p.get('is_false_alarm', False)
+        })
+    # Reports
+    reports = await db.civil_reports.find({'user_id': user_id}).sort('created_at', -1).to_list(50)
+    for r in reports:
+        events.append({
+            'type': 'report', 'icon': 'videocam' if r.get('type') == 'video' else 'mic', 'color': '#3B82F6',
+            'title': f"{(r.get('type') or 'report').title()} Report Submitted",
+            'timestamp': r.get('created_at', datetime.utcnow()).isoformat(),
+            'detail': r.get('caption', 'No caption')
+        })
+    # Escort sessions
+    escorts = await db.escort_sessions.find({'user_id': user_id}).sort('started_at', -1).to_list(20)
+    for e in escorts:
+        events.append({
+            'type': 'escort', 'icon': 'navigate', 'color': '#10B981',
+            'title': 'Security Escort Session',
+            'timestamp': e.get('started_at', datetime.utcnow()).isoformat(),
+            'detail': f"{len(e.get('locations', []))} GPS points recorded"
+        })
+    # Sort all by timestamp desc
+    events.sort(key=lambda x: x['timestamp'], reverse=True)
+    return {'timeline': events[:80]}
 
 @api_router.delete("/admin/users/{user_id}")
 async def admin_delete_user(user_id: str, user: dict = Depends(get_admin_user)):
@@ -1470,23 +1635,276 @@ async def admin_all_panics(
     limit: int = 50,
     user: dict = Depends(get_admin_user)
 ):
-    """Get all panic events"""
+    """Get all panic events with full user details"""
     query = {'is_active': True} if active_only else {}
     panics = await db.panic_events.find(query).sort('activated_at', -1).skip(skip).limit(limit).to_list(length=limit)
     total = await db.panic_events.count_documents(query)
-    
-    return {
-        'panics': [{
+    result = []
+    for p in panics:
+        user_info = await db.users.find_one({'_id': ObjectId(p['user_id'])}) if p.get('user_id') else None
+        latest_loc = p.get('locations', [])[-1] if p.get('locations') else None
+        lat = latest_loc['latitude'] if latest_loc else (p.get('location', {}).get('coordinates', [0,0])[1] if p.get('location') else None)
+        lng = latest_loc['longitude'] if latest_loc else (p.get('location', {}).get('coordinates', [0,0])[0] if p.get('location') else None)
+        result.append({
             'id': str(p['_id']),
             'user_id': p.get('user_id'),
+            'full_name': (user_info.get('full_name') or '').strip() if user_info else 'Unknown',
+            'user_email': user_info.get('email', 'Unknown') if user_info else 'Unknown',
+            'user_phone': user_info.get('phone', '') if user_info else '',
+            'profile_photo_url': user_info.get('profile_photo_url') if user_info else None,
             'is_active': p.get('is_active'),
+            'is_false_alarm': p.get('is_false_alarm', False),
             'emergency_category': p.get('emergency_category', 'other'),
-            'location': p.get('location'),
+            'latitude': lat,
+            'longitude': lng,
+            'location_count': len(p.get('locations', [])),
+            'locations': p.get('locations', [])[-30:],
+            'incident_notes': p.get('incident_notes', []),
             'activated_at': p.get('activated_at', datetime.utcnow()).isoformat(),
-            'deactivated_at': p.get('deactivated_at').isoformat() if p.get('deactivated_at') else None
-        } for p in panics],
-        'total': total
+            'deactivated_at': p.get('deactivated_at').isoformat() if p.get('deactivated_at') else None,
+        })
+    return {'panics': result, 'total': total}
+
+@api_router.post("/admin/panics/{panic_id}/deactivate")
+async def admin_deactivate_panic(panic_id: str, reason: str = Body('Manual override by admin'), user: dict = Depends(get_admin_user)):
+    """Manually deactivate a panic — admin override"""
+    result = await db.panic_events.update_one(
+        {'_id': ObjectId(panic_id)},
+        {'$set': {'is_active': False, 'deactivated_at': datetime.utcnow(), 'deactivated_by': 'admin', 'deactivation_reason': reason}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Panic not found")
+    await _log_admin_action(str(user['_id']), 'deactivate_panic', 'panic', panic_id, {'reason': reason})
+    return {'message': 'Panic deactivated by admin'}
+
+@api_router.post("/admin/panics/{panic_id}/false-alarm")
+async def admin_false_alarm(panic_id: str, user: dict = Depends(get_admin_user)):
+    """Mark a panic as a false alarm"""
+    panic = await db.panic_events.find_one({'_id': ObjectId(panic_id)})
+    if not panic:
+        raise HTTPException(status_code=404, detail="Panic not found")
+    new_val = not panic.get('is_false_alarm', False)
+    await db.panic_events.update_one(
+        {'_id': ObjectId(panic_id)},
+        {'$set': {'is_false_alarm': new_val}}
+    )
+    if new_val and panic.get('user_id'):
+        # Increment user's false alarm count
+        await db.users.update_one({'_id': ObjectId(panic['user_id'])}, {'$inc': {'false_alarm_count': 1}})
+    await _log_admin_action(str(user['_id']), 'mark_false_alarm', 'panic', panic_id, {'is_false_alarm': new_val})
+    return {'is_false_alarm': new_val}
+
+@api_router.post("/admin/panics/{panic_id}/notes")
+async def admin_add_panic_note(panic_id: str, note: str = Body(...), user: dict = Depends(get_admin_user)):
+    """Add an incident note to a panic event"""
+    note_entry = {
+        'note': note,
+        'added_by': user.get('email', 'Admin'),
+        'added_at': datetime.utcnow().isoformat()
     }
+    result = await db.panic_events.update_one(
+        {'_id': ObjectId(panic_id)},
+        {'$push': {'incident_notes': note_entry}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Panic not found")
+    await _log_admin_action(str(user['_id']), 'add_incident_note', 'panic', panic_id, {'note': note[:100]})
+    return {'message': 'Note added', 'note': note_entry}
+
+@api_router.put("/admin/reports/{report_id}/status")
+async def admin_update_report_status(report_id: str, status: str = Body(...), user: dict = Depends(get_admin_user)):
+    """Update report review status: new → under_review → escalated → resolved → forwarded"""
+    valid_statuses = ['new', 'under_review', 'escalated', 'resolved', 'forwarded']
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+    result = await db.civil_reports.update_one(
+        {'_id': ObjectId(report_id)},
+        {'$set': {'status': status, 'status_updated_at': datetime.utcnow(), 'status_updated_by': user.get('email')}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Report not found")
+    await _log_admin_action(str(user['_id']), 'update_report_status', 'report', report_id, {'status': status})
+    return {'status': status}
+
+@api_router.get("/admin/security-teams")
+async def admin_get_security_teams(user: dict = Depends(get_admin_user)):
+    """Get all security teams with their members"""
+    teams_raw = await db.security_teams.find({}).to_list(100)
+    result = []
+    for team in teams_raw:
+        members = await db.users.find({'team_name': team.get('name'), 'role': 'security'}).to_list(50)
+        result.append({
+            'id': str(team['_id']),
+            'name': team.get('name', 'Unnamed Team'),
+            'team_location': team.get('teamLocation'),
+            'radius_km': team.get('radius_km', 10.0),
+            'member_count': len(members),
+            'members': [{
+                'id': str(m['_id']),
+                'full_name': m.get('full_name', ''),
+                'email': m.get('email'),
+                'phone': m.get('phone', ''),
+                'sub_role': m.get('security_sub_role', 'team_member'),
+                'is_active': m.get('is_active', True),
+                'status': m.get('status', 'offline'),
+                'is_verified': m.get('is_verified', False),
+                'profile_photo_url': m.get('profile_photo_url'),
+            } for m in members]
+        })
+    # Also get ungrouped security officers
+    all_security = await db.users.find({'role': 'security', 'is_active': True}).to_list(200)
+    team_names_in_results = {t['name'] for t in result}
+    ungrouped = [m for m in all_security if m.get('team_name', '') not in team_names_in_results or not m.get('team_name')]
+    if ungrouped:
+        result.append({
+            'id': 'ungrouped',
+            'name': 'Unassigned Officers',
+            'team_location': None,
+            'radius_km': 0,
+            'member_count': len(ungrouped),
+            'members': [{
+                'id': str(m['_id']),
+                'full_name': m.get('full_name', ''),
+                'email': m.get('email'),
+                'phone': m.get('phone', ''),
+                'sub_role': m.get('security_sub_role', 'team_member'),
+                'is_active': m.get('is_active', True),
+                'status': m.get('status', 'offline'),
+                'is_verified': m.get('is_verified', False),
+                'profile_photo_url': m.get('profile_photo_url'),
+            } for m in ungrouped]
+        })
+    return result
+
+@api_router.get("/admin/analytics")
+async def admin_analytics(user: dict = Depends(get_admin_user)):
+    """Get analytics data: trends, response times, category breakdowns"""
+    now = datetime.utcnow()
+    thirty_days = now - timedelta(days=30)
+    seven_days = now - timedelta(days=7)
+
+    # Daily panic counts for last 7 days
+    daily_panics = []
+    for i in range(6, -1, -1):
+        day_start = now - timedelta(days=i+1)
+        day_end = now - timedelta(days=i)
+        count = await db.panic_events.count_documents({
+            'activated_at': {'$gte': day_start, '$lt': day_end}
+        })
+        daily_panics.append({
+            'day': day_start.strftime('%a'),
+            'date': day_start.strftime('%m/%d'),
+            'count': count
+        })
+
+    # Category breakdown (30 days)
+    cat_pipeline = [
+        {'$match': {'activated_at': {'$gte': thirty_days}}},
+        {'$group': {'_id': '$emergency_category', 'count': {'$sum': 1}}},
+        {'$sort': {'count': -1}}
+    ]
+    categories = []
+    async for doc in db.panic_events.aggregate(cat_pipeline):
+        categories.append({'category': doc['_id'] or 'other', 'count': doc['count']})
+
+    # Response times (resolved panics last 30 days)
+    resolved = await db.panic_events.find({
+        'is_active': False,
+        'deactivated_at': {'$exists': True},
+        'activated_at': {'$gte': thirty_days}
+    }).to_list(200)
+    response_buckets = {'<5 min': 0, '5-15 min': 0, '15-30 min': 0, '>30 min': 0}
+    for p in resolved:
+        try:
+            mins = (p['deactivated_at'] - p['activated_at']).total_seconds() / 60
+            if mins < 5: response_buckets['<5 min'] += 1
+            elif mins < 15: response_buckets['5-15 min'] += 1
+            elif mins < 30: response_buckets['15-30 min'] += 1
+            else: response_buckets['>30 min'] += 1
+        except: pass
+
+    # Reports by type
+    video_reports = await db.civil_reports.count_documents({'type': 'video'})
+    audio_reports = await db.civil_reports.count_documents({'type': 'audio'})
+
+    # User growth (daily new users last 7 days)
+    daily_users = []
+    for i in range(6, -1, -1):
+        day_start = now - timedelta(days=i+1)
+        day_end = now - timedelta(days=i)
+        count = await db.users.count_documents({'created_at': {'$gte': day_start, '$lt': day_end}})
+        daily_users.append({'day': day_start.strftime('%a'), 'date': day_start.strftime('%m/%d'), 'count': count})
+
+    # False alarm rate
+    total_panics_30d = await db.panic_events.count_documents({'activated_at': {'$gte': thirty_days}})
+    false_alarms_30d = await db.panic_events.count_documents({'activated_at': {'$gte': thirty_days}, 'is_false_alarm': True})
+
+    return {
+        'daily_panics': daily_panics,
+        'daily_users': daily_users,
+        'categories': categories,
+        'response_time_buckets': [{'label': k, 'count': v} for k, v in response_buckets.items()],
+        'reports_by_type': [{'type': 'Video', 'count': video_reports}, {'type': 'Audio', 'count': audio_reports}],
+        'false_alarm_rate': round((false_alarms_30d / total_panics_30d * 100) if total_panics_30d else 0, 1),
+        'total_panics_30d': total_panics_30d,
+    }
+
+@api_router.get("/admin/audit-log")
+async def admin_audit_log(skip: int = 0, limit: int = 50, user: dict = Depends(get_admin_user)):
+    """Get immutable admin audit log"""
+    logs = await db.admin_audit_log.find({}).sort('timestamp', -1).skip(skip).limit(limit).to_list(limit)
+    total = await db.admin_audit_log.count_documents({})
+    result = []
+    for log in logs:
+        admin = await db.users.find_one({'_id': ObjectId(log['admin_id'])}) if log.get('admin_id') else None
+        result.append({
+            'id': str(log['_id']),
+            'admin_name': admin.get('full_name') or admin.get('email', 'Unknown') if admin else 'Unknown',
+            'admin_email': admin.get('email', '') if admin else '',
+            'action': log.get('action'),
+            'target_type': log.get('target_type'),
+            'target_id': log.get('target_id'),
+            'details': log.get('details', {}),
+            'timestamp': log.get('timestamp', datetime.utcnow()).isoformat()
+        })
+    return {'logs': result, 'total': total}
+
+@api_router.post("/admin/broadcast")
+async def admin_broadcast(
+    title: str = Body(...),
+    message: str = Body(...),
+    target_role: Optional[str] = Body(None),
+    user: dict = Depends(get_admin_user)
+):
+    """Broadcast a push notification/message to all users or by role"""
+    query = {'is_active': True}
+    if target_role and target_role != 'all':
+        query['role'] = target_role
+    
+    target_users = await db.users.find(query).to_list(5000)
+    push_tokens = [u['push_token'] for u in target_users if u.get('push_token')]
+    
+    # Store broadcast record
+    await db.broadcasts.insert_one({
+        'title': title,
+        'message': message,
+        'target_role': target_role or 'all',
+        'recipient_count': len(target_users),
+        'sent_by': user.get('email'),
+        'sent_at': datetime.utcnow()
+    })
+    
+    # Send push notifications in batches of 100
+    sent = 0
+    for i in range(0, len(push_tokens), 100):
+        batch = push_tokens[i:i+100]
+        result = await push_service.send_push_notification(batch, title, message, {'type': 'broadcast'})
+        sent += result.get('sent_to', 0)
+    
+    await _log_admin_action(str(user['_id']), 'broadcast', 'all', 'all', {
+        'title': title, 'target_role': target_role, 'recipients': len(target_users)
+    })
+    return {'message': 'Broadcast sent', 'recipients': len(target_users), 'push_sent': sent}
 
 @api_router.get("/admin/all-reports")
 async def admin_all_reports(
@@ -1495,27 +1913,39 @@ async def admin_all_reports(
     limit: int = 50,
     user: dict = Depends(get_admin_user)
 ):
-    """Get all reports"""
+    """Get all reports with user details and status"""
     query = {}
     if report_type:
         query['type'] = report_type
-    
     reports = await db.civil_reports.find(query).sort('created_at', -1).skip(skip).limit(limit).to_list(length=limit)
     total = await db.civil_reports.count_documents(query)
-    
-    return {
-        'reports': [{
+    result = []
+    for r in reports:
+        user_info = None
+        if not r.get('is_anonymous') and r.get('user_id'):
+            try:
+                user_info = await db.users.find_one({'_id': ObjectId(r['user_id'])})
+            except: pass
+        file_url = r.get('file_url', '')
+        if file_url and not file_url.startswith('http'):
+            file_url = file_url  # relative path, frontend will prepend BACKEND_URL
+        result.append({
             'id': str(r['_id']),
             'user_id': r.get('user_id'),
+            'full_name': (user_info.get('full_name') or '').strip() if user_info else ('Anonymous' if r.get('is_anonymous') else 'Unknown'),
+            'user_email': user_info.get('email', '') if user_info else '',
+            'user_phone': user_info.get('phone', '') if user_info else '',
             'type': r.get('type'),
             'caption': r.get('caption', ''),
             'is_anonymous': r.get('is_anonymous', False),
-            'file_url': r.get('file_url'),
+            'file_url': file_url,
             'location': r.get('location'),
+            'status': r.get('status', 'new'),
+            'status_updated_at': r.get('status_updated_at').isoformat() if r.get('status_updated_at') else None,
+            'status_updated_by': r.get('status_updated_by', ''),
             'created_at': r.get('created_at', datetime.utcnow()).isoformat()
-        } for r in reports],
-        'total': total
-    }
+        })
+    return {'reports': result, 'total': total}
 
 @api_router.post("/admin/invite-codes")
 async def admin_create_invite_code(code_data: CreateInviteCode, user: dict = Depends(get_admin_user)):
@@ -2221,15 +2651,14 @@ async def admin_send_message(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ===== MEDIA FILE SERVING =====
+# ===== MEDIA FILE SERVING (with video streaming / range request support) =====
 @app.get("/api/media/{folder}/{filename}")
-async def serve_media_file(folder: str, filename: str):
-    """Serve uploaded media files (videos, photos) without requiring auth"""
+async def serve_media_file(folder: str, filename: str, request: Request):
+    """Serve uploaded media files with range-request support for video streaming"""
     from services import ROOT_DIR
     file_path = ROOT_DIR / 'uploads' / folder / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    # Determine content type
     suffix = file_path.suffix.lower()
     content_types = {
         '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.avi': 'video/x-msvideo',
@@ -2238,7 +2667,142 @@ async def serve_media_file(folder: str, filename: str):
         '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav',
     }
     media_type = content_types.get(suffix, 'application/octet-stream')
-    return FileResponse(str(file_path), media_type=media_type)
+    file_size = file_path.stat().st_size
+    range_header = request.headers.get('range')
+    if range_header and suffix in ('.mp4', '.mov', '.avi', '.webm', '.mp3', '.m4a', '.wav'):
+        try:
+            range_val = range_header.strip().replace('bytes=', '')
+            start_str, end_str = range_val.split('-')
+            start = int(start_str) if start_str else 0
+            end = int(end_str) if end_str else file_size - 1
+            end = min(end, file_size - 1)
+            chunk_size = end - start + 1
+            def iter_file():
+                with open(file_path, 'rb') as f:
+                    f.seek(start)
+                    remaining = chunk_size
+                    while remaining > 0:
+                        data = f.read(min(65536, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+            return StreamingResponse(
+                iter_file(), status_code=206, media_type=media_type,
+                headers={
+                    'Content-Range': f'bytes {start}-{end}/{file_size}',
+                    'Accept-Ranges': 'bytes',
+                    'Content-Length': str(chunk_size),
+                    'Access-Control-Allow-Origin': '*',
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Range request error: {e}")
+    return FileResponse(
+        str(file_path), media_type=media_type,
+        headers={'Accept-Ranges': 'bytes', 'Content-Length': str(file_size), 'Access-Control-Allow-Origin': '*'}
+    )
+
+
+# ===== ADMIN: CLEAR AUDIO/VIDEO UPLOADS =====
+@api_router.delete("/admin/clear-uploads")
+async def admin_clear_uploads(user: dict = Depends(get_admin_user)):
+    """Delete all audio and video report records and files from the database and disk"""
+    from services import ROOT_DIR
+    import shutil
+    deleted_records = 0
+    deleted_files = 0
+
+    # Get all reports with file_url
+    reports = await db.civil_reports.find({'type': {'$in': ['video', 'audio']}}).to_list(length=None)
+    for r in reports:
+        file_url = r.get('file_url', '')
+        if file_url and file_url.startswith('/api/media/'):
+            parts = file_url.replace('/api/media/', '').split('/')
+            if len(parts) == 2:
+                file_path = ROOT_DIR / 'uploads' / parts[0] / parts[1]
+                if file_path.exists():
+                    file_path.unlink()
+                    deleted_files += 1
+
+    # Delete all video/audio report records
+    result = await db.civil_reports.delete_many({'type': {'$in': ['video', 'audio']}})
+    deleted_records = result.deleted_count
+
+    await _log_admin_action(str(user['_id']), 'clear_uploads', 'reports', 'all', {
+        'deleted_records': deleted_records, 'deleted_files': deleted_files
+    })
+    return {
+        'message': f'Cleared {deleted_records} report records and {deleted_files} media files',
+        'deleted_records': deleted_records,
+        'deleted_files': deleted_files
+    }
+
+
+# ===== ESCORT ETA MONITORING =====
+class EscortETA(BaseModel):
+    session_id: str
+    eta_minutes: int
+    destination: Optional[str] = None
+
+@api_router.post("/escort/set-eta")
+async def set_escort_eta(eta_data: EscortETA, user = Depends(get_current_user)):
+    """Set ETA for an escort session — security teams will be alerted if not safe by then"""
+    session = await db.escort_sessions.find_one({'_id': ObjectId(eta_data.session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Escort session not found")
+
+    eta_time = datetime.utcnow() + timedelta(minutes=eta_data.eta_minutes)
+    await db.escort_sessions.update_one(
+        {'_id': ObjectId(eta_data.session_id)},
+        {'$set': {
+            'eta_time': eta_time,
+            'eta_minutes': eta_data.eta_minutes,
+            'destination': eta_data.destination or '',
+            'eta_alerted': False,
+        }}
+    )
+    return {'message': 'ETA set', 'eta_time': eta_time.isoformat(), 'eta_minutes': eta_data.eta_minutes}
+
+@api_router.get("/security/escort-eta-alerts")
+async def get_escort_eta_alerts(user = Depends(get_current_user)):
+    """Get escort sessions where ETA has passed but user hasn't marked safe"""
+    if user.get('role') not in ['security', 'admin']:
+        raise HTTPException(status_code=403, detail="Security or admin only")
+
+    now = datetime.utcnow()
+    # Sessions that are still active, have an ETA set, and the ETA has passed
+    overdue = await db.escort_sessions.find({
+        'is_active': True,
+        'eta_time': {'$exists': True, '$lt': now},
+        'eta_alerted': {'$ne': True}
+    }).to_list(50)
+
+    result = []
+    for s in overdue:
+        user_info = await db.users.find_one({'_id': ObjectId(s['user_id'])})
+        if not user_info:
+            user_info = {}
+        latest_loc = s.get('locations', [])[-1] if s.get('locations') else None
+        minutes_overdue = int((now - s['eta_time']).total_seconds() / 60)
+        result.append({
+            'session_id': str(s['_id']),
+            'user_name': user_info.get('full_name') or user_info.get('email', 'Unknown'),
+            'user_email': user_info.get('email', ''),
+            'user_phone': user_info.get('phone', ''),
+            'started_at': s.get('started_at'),
+            'eta_time': s.get('eta_time'),
+            'eta_minutes': s.get('eta_minutes', 0),
+            'minutes_overdue': minutes_overdue,
+            'destination': s.get('destination', ''),
+            'latitude': latest_loc['latitude'] if latest_loc else None,
+            'longitude': latest_loc['longitude'] if latest_loc else None,
+        })
+        # Mark as alerted so we don't spam
+        await db.escort_sessions.update_one({'_id': s['_id']}, {'$set': {'eta_alerted': True}})
+
+    return result
+
 
 # Include router
 app.include_router(api_router)
