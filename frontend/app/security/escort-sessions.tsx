@@ -25,20 +25,36 @@ export default function EscortSessions() {
     }, [])
   );
 
+  const [etaAlerts, setEtaAlerts] = useState<any[]>([]);
+
   const loadSessions = async () => {
     try {
       const token = await getAuthToken();
       if (!token) { router.replace('/auth/login'); return; }
-      const response = await axios.get(`${BACKEND_URL}/api/security/escort-sessions?t=${Date.now()}`, {
-        headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' },
-        timeout: 15000,
-      });
-      setSessions(response.data || []);
-    } catch (error: any) {
-      if (error?.response?.status === 401) {
-        await clearAuthData();
-        router.replace('/auth/login');
+      const [sessRes, etaRes] = await Promise.allSettled([
+        axios.get(`${BACKEND_URL}/api/security/escort-sessions?t=${Date.now()}`, {
+          headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' },
+          timeout: 15000,
+        }),
+        axios.get(`${BACKEND_URL}/api/security/escort-eta-alerts?t=${Date.now()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 10000,
+        }),
+      ]);
+      if (sessRes.status === 'fulfilled') setSessions(sessRes.value.data || []);
+      if (etaRes.status === 'fulfilled') {
+        const alerts = etaRes.value.data || [];
+        setEtaAlerts(alerts);
+        if (alerts.length > 0) {
+          Alert.alert(
+            '⚠️ ETA Overdue',
+            `${alerts.length} escort session(s) have exceeded their ETA. Tap "Escort Sessions" to check on users.`,
+            [{ text: 'OK' }]
+          );
+        }
       }
+    } catch (error: any) {
+      if (error?.response?.status === 401) { await clearAuthData(); router.replace('/auth/login'); }
     } finally {
       setLoading(false);
     }
@@ -167,6 +183,16 @@ export default function EscortSessions() {
         </TouchableOpacity>
       </View>
 
+      {/* ETA Overdue Alerts */}
+      {etaAlerts.length > 0 && (
+        <View style={styles.etaAlertBanner}>
+          <Ionicons name="warning" size={20} color="#F59E0B" />
+          <Text style={styles.etaAlertText}>
+            {etaAlerts.length} user(s) overdue — please check on them
+          </Text>
+        </View>
+      )}
+
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#10B981" />
@@ -233,4 +259,6 @@ const styles = StyleSheet.create({
   emptyContainer: { alignItems: 'center', paddingVertical: 80, paddingHorizontal: 32 },
   emptyTitle: { fontSize: 18, fontWeight: '600', color: '#64748B', marginTop: 16, marginBottom: 8 },
   emptySubtext: { fontSize: 14, color: '#475569', textAlign: 'center', lineHeight: 20 },
+  etaAlertBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#F59E0B20', marginHorizontal: 16, marginTop: 12, padding: 14, borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#F59E0B' },
+  etaAlertText: { fontSize: 14, color: '#F59E0B', fontWeight: '600', flex: 1 },
 });
