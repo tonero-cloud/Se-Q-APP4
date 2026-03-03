@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState, BackHandler, Linking } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState, BackHandler, Linking, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,12 +14,9 @@ import { getAuthToken, clearAuthData } from '../../utils/auth';
 const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL || 'https://ongoing-dev-22.preview.emergentagent.com';
 const LOCATION_TASK = 'background-location-panic';
 
-// Background task - uses AsyncStorage directly (can't use SecureStore in background)
+// Background task
 TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
-  if (error) {
-    console.error('[PanicActive] Background location error:', error);
-    return;
-  }
+  if (error) { console.error('[PanicActive] BG location error:', error); return; }
   if (data) {
     const { locations } = data as any;
     const location = locations[0];
@@ -27,34 +24,18 @@ TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
       const token = await AsyncStorage.getItem('auth_token');
       if (token) {
         await axios.post(`${BACKEND_URL}/api/panic/location`, {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          accuracy: location.coords.accuracy,
-          timestamp: new Date().toISOString()
-        }, { 
-          headers: { Authorization: `Bearer ${token}` },
-          timeout: 15000 
-        });
+          latitude: location.coords.latitude, longitude: location.coords.longitude,
+          accuracy: location.coords.accuracy, timestamp: new Date().toISOString()
+        }, { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
       }
-    } catch (err) {
-      console.error('[PanicActive] Failed to send panic location:', err);
-    }
+    } catch {}
   }
 });
 
-// Emergency contacts for routing
-const EMERGENCY_SERVICES = {
-  ambulance: [
-    { name: 'National Emergency', number: '112' },
-    { name: 'Ambulance Service', number: '911' },
-  ],
-  fire: [
-    { name: 'Fire Service', number: '101' },
-    { name: 'Emergency', number: '112' },
-  ]
+const EMERGENCY_SERVICES: Record<string, { name: string; number: string }[]> = {
+  ambulance: [{ name: 'National Emergency', number: '112' }, { name: 'Ambulance Service', number: '911' }],
+  fire: [{ name: 'Fire Service', number: '101' }, { name: 'Emergency', number: '112' }],
 };
-
-// Security emergencies that notify agencies
 const SECURITY_EMERGENCIES = ['violence', 'robbery', 'kidnapping', 'breakin', 'burglary', 'harassment', 'other'];
 
 export default function PanicActive() {
@@ -70,13 +51,9 @@ export default function PanicActive() {
   useEffect(() => {
     checkActivePanic();
     const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => {
-      subscription.remove();
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => { subscription.remove(); if (intervalRef.current) clearInterval(intervalRef.current); };
   }, []);
 
-  // Check for existing active panic on load
   const checkActivePanic = async () => {
     try {
       const activePanic = await AsyncStorage.getItem('active_panic');
@@ -87,203 +64,140 @@ export default function PanicActive() {
         setIsTracking(true);
         setShowSafeButton(true);
         setShowCategoryModal(false);
-        
-        // Resume location tracking
         const token = await getAuthToken();
-        if (token) {
-          startLocationTracking(token);
-        }
+        if (token) startLocationTracking(token);
       }
-    } catch (error) {
-      console.error('[PanicActive] Error checking active panic:', error);
-    }
+    } catch {}
   };
 
   const handleAppStateChange = (nextAppState: string) => {
-    if (nextAppState === 'active' && isTracking) {
-      setShowSafeButton(true);
-    }
+    if (nextAppState === 'active' && isTracking) setShowSafeButton(true);
   };
 
   const handleCategorySelect = async (category: string) => {
     setSelectedCategory(category);
     setShowCategoryModal(false);
-
-    // Route based on emergency type
-    if (category === 'medical') {
-      setShowEmergencyContacts('ambulance');
-    } else if (category === 'fire') {
-      setShowEmergencyContacts('fire');
-    } else if (SECURITY_EMERGENCIES.includes(category)) {
-      // Security emergency - activate panic and notify agencies
-      await activatePanicMode(category);
-    }
-  };
-
-  const handleCategoryCancel = () => {
-    setShowCategoryModal(false);
-    router.back();
+    if (category === 'medical') { setShowEmergencyContacts('ambulance'); }
+    else if (category === 'fire') { setShowEmergencyContacts('fire'); }
+    else if (SECURITY_EMERGENCIES.includes(category)) { await activatePanicMode(category); }
   };
 
   const activatePanicMode = async (category: string) => {
     try {
+      // Request permissions
       const { status: foregroundStatus } = await Location.requestForegroundPermissionsAsync();
       if (foregroundStatus !== 'granted') {
-        Alert.alert('Permission Denied', 'Location permission required');
+        Alert.alert('Permission Denied', 'Location permission required for panic mode.');
         router.back();
         return;
       }
-
       await Location.requestBackgroundPermissionsAsync();
 
-      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      // Get FRESH high-accuracy GPS location
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.BestForNavigation,
+      });
+
       const token = await getAuthToken();
-      
-      if (!token) {
-        Alert.alert('Session Expired', 'Please login again');
-        router.replace('/auth/login');
-        return;
-      }
-      
+      if (!token) { Alert.alert('Session Expired', 'Please login again'); router.replace('/auth/login'); return; }
+
       const response = await axios.post(`${BACKEND_URL}/api/panic/activate`, {
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
         accuracy: location.coords.accuracy,
         timestamp: new Date().toISOString(),
-        emergency_category: category
-      }, { 
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 15000 
-      });
+        emergency_category: category,
+      }, { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
 
       const newPanicId = response.data.panic_id;
       setPanicId(newPanicId);
       setIsTracking(true);
 
-      // Save to storage for persistence
       await AsyncStorage.setItem('active_panic', JSON.stringify({
-        id: newPanicId,
-        category: category,
-        activated_at: new Date().toISOString()
+        id: newPanicId, category, activated_at: new Date().toISOString()
       }));
-
-      // Copy token to AsyncStorage for background task
       await AsyncStorage.setItem('auth_token', token);
 
       startLocationTracking(token);
 
-      // Immediately close app for discreet background tracking (no OK dialog needed)
-      BackHandler.exitApp();
+      // Close the app (Android: exit; iOS: minimize — no programmatic close on iOS)
+      if (Platform.OS === 'android') {
+        BackHandler.exitApp();
+      } else {
+        // iOS — go to home screen via router, app minimizes naturally
+        router.replace('/auth/login');
+      }
     } catch (error: any) {
-      console.error('[PanicActive] Activation error:', error?.response?.data);
       if (error?.response?.status === 401) {
-        Alert.alert('Session Expired', 'Please login again');
         await clearAuthData();
         router.replace('/auth/login');
       } else {
-        Alert.alert('Error', 'Failed to activate panic mode');
+        Alert.alert('Error', 'Failed to activate panic mode. Please try again.');
         router.back();
       }
     }
   };
 
   const startLocationTracking = async (token: string) => {
-    // Foreground interval tracking
     if (intervalRef.current) clearInterval(intervalRef.current);
-    
     intervalRef.current = setInterval(async () => {
       try {
         const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
         await axios.post(`${BACKEND_URL}/api/panic/location`, {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          accuracy: location.coords.accuracy,
-          timestamp: new Date().toISOString()
-        }, { 
-          headers: { Authorization: `Bearer ${token}` },
-          timeout: 10000 
-        });
-        console.log('[PanicActive] Location sent');
-      } catch (error) {
-        console.error('[PanicActive] Location tracking error:', error);
-      }
+          latitude: location.coords.latitude, longitude: location.coords.longitude,
+          accuracy: location.coords.accuracy, timestamp: new Date().toISOString()
+        }, { headers: { Authorization: `Bearer ${token}` }, timeout: 10000 });
+      } catch {}
     }, 30000);
 
-    // Try to start background tracking
     try {
       await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 30000,
-        distanceInterval: 0,
+        accuracy: Location.Accuracy.High, timeInterval: 30000, distanceInterval: 0,
         foregroundService: {
-          notificationTitle: 'SafeGuard Active',
-          notificationBody: 'Location tracking in progress',
+          notificationTitle: '🚨 SafeGuard Panic Active',
+          notificationBody: 'Your location is being shared with security. Tap to open app.',
         },
       });
-    } catch (bgError) {
-      console.log('[PanicActive] Background tracking not available:', bgError);
-    }
+    } catch {}
   };
 
   const markSafe = async () => {
-    Alert.alert(
-      "I'm Safe Now",
-      'This will stop tracking and notify security that you are safe.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: "Yes, I'm Safe",
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const token = await getAuthToken();
-              if (intervalRef.current) clearInterval(intervalRef.current);
-              
-              // Stop background tracking
-              try {
-                await Location.stopLocationUpdatesAsync(LOCATION_TASK);
-              } catch (stopError) {
-                console.log('[PanicActive] Background stop error:', stopError);
-              }
+    Alert.alert("I'm Safe Now", 'This will stop tracking and notify security you are safe.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: "Yes, I'm Safe",
+        onPress: async () => {
+          try {
+            const token = await getAuthToken();
+            if (intervalRef.current) clearInterval(intervalRef.current);
+            try { await Location.stopLocationUpdatesAsync(LOCATION_TASK); } catch {}
 
-              // Deactivate in backend
-              if (token) {
-                await axios.post(`${BACKEND_URL}/api/panic/deactivate`, {}, { 
-                  headers: { Authorization: `Bearer ${token}` },
-                  timeout: 15000 
-                });
-              }
-
-              // Clear local storage
-              await AsyncStorage.removeItem('active_panic');
-
-              setIsTracking(false);
-              setShowSafeButton(false);
-              
-              Alert.alert('You are Safe', 'Panic mode deactivated. Stay safe!', [
-                { text: 'OK', onPress: () => router.replace('/civil/home') }
-              ]);
-            } catch (error) {
-              Alert.alert('Error', 'Failed to deactivate panic mode');
-              console.error('[PanicActive] Deactivation error:', error);
+            if (token) {
+              await axios.post(`${BACKEND_URL}/api/panic/deactivate`, {}, {
+                headers: { Authorization: `Bearer ${token}` }, timeout: 15000
+              });
             }
+            await AsyncStorage.removeItem('active_panic');
+            setIsTracking(false);
+            setShowSafeButton(false);
+            Alert.alert('✅ You are Safe', 'Panic mode deactivated. Security has been notified.', [
+              { text: 'OK', onPress: () => router.replace('/civil/home') }
+            ]);
+          } catch {
+            Alert.alert('Error', 'Failed to deactivate panic mode. Please try again.');
           }
         }
-      ]
-    );
+      }
+    ]);
   };
 
-  const callEmergency = (number: string) => {
-    Linking.openURL(`tel:${number}`);
-  };
+  const callEmergency = (number: string) => Linking.openURL(`tel:${number}`);
 
-  // Show emergency contacts for medical/fire
   if (showEmergencyContacts) {
     const services = EMERGENCY_SERVICES[showEmergencyContacts];
     const title = showEmergencyContacts === 'ambulance' ? 'Ambulance Services' : 'Fire Services';
     const icon = showEmergencyContacts === 'ambulance' ? 'medkit' : 'flame';
     const color = showEmergencyContacts === 'ambulance' ? '#10B981' : '#F59E0B';
-
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.header}>
@@ -293,22 +207,14 @@ export default function PanicActive() {
           <Text style={styles.headerTitle}>{title}</Text>
           <View style={{ width: 24 }} />
         </View>
-
         <View style={styles.emergencyContent}>
           <View style={[styles.emergencyIcon, { backgroundColor: `${color}20` }]}>
             <Ionicons name={icon as any} size={60} color={color} />
           </View>
           <Text style={styles.emergencyTitle}>{title}</Text>
-          <Text style={styles.emergencyDescription}>
-            Tap to call emergency services immediately
-          </Text>
-
-          {services.map((service, index) => (
-            <TouchableOpacity
-              key={index}
-              style={[styles.callButton, { backgroundColor: color }]}
-              onPress={() => callEmergency(service.number)}
-            >
+          <Text style={styles.emergencyDescription}>Tap to call emergency services immediately</Text>
+          {services.map((service, i) => (
+            <TouchableOpacity key={i} style={[styles.callButton, { backgroundColor: color }]} onPress={() => callEmergency(service.number)}>
               <Ionicons name="call" size={24} color="#fff" />
               <View style={styles.callInfo}>
                 <Text style={styles.callName}>{service.name}</Text>
@@ -316,11 +222,7 @@ export default function PanicActive() {
               </View>
             </TouchableOpacity>
           ))}
-
-          <TouchableOpacity
-            style={styles.backHomeButton}
-            onPress={() => router.replace('/civil/home')}
-          >
+          <TouchableOpacity style={styles.backHomeButton} onPress={() => router.replace('/civil/home')}>
             <Text style={styles.backHomeText}>Back to Home</Text>
           </TouchableOpacity>
         </View>
@@ -328,52 +230,32 @@ export default function PanicActive() {
     );
   }
 
-  // Show "I'm Safe Now" button if panic was previously activated
   if (showSafeButton && isTracking) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.trackingContent}>
-          <View style={styles.trackingIcon}>
-            <Ionicons name="radio" size={80} color="#EF4444" />
-          </View>
+          <View style={styles.trackingIcon}><Ionicons name="radio" size={80} color="#EF4444" /></View>
           <Text style={styles.trackingTitle}>🚨 Panic Mode Active</Text>
-          <Text style={styles.trackingSubtitle}>
-            Your location is being tracked and shared with nearby security.
-          </Text>
-          <Text style={styles.trackingCategory}>
-            Emergency: {selectedCategory?.toUpperCase()}
-          </Text>
-
+          <Text style={styles.trackingSubtitle}>Your location is being tracked and shared with nearby security.</Text>
+          <Text style={styles.trackingCategory}>Emergency: {selectedCategory?.toUpperCase()}</Text>
           <TouchableOpacity style={styles.safeButton} onPress={markSafe}>
             <Ionicons name="shield-checkmark" size={28} color="#fff" />
             <Text style={styles.safeButtonText}>I'm Safe Now</Text>
           </TouchableOpacity>
-
-          <Text style={styles.safeNote}>
-            Tap above when you are safe to stop tracking
-          </Text>
+          <Text style={styles.safeNote}>Tap above when you are safe to stop tracking and notify security.</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  // Show category selection modal
   return (
     <SafeAreaView style={styles.container}>
-      <EmergencyCategoryModal
-        visible={showCategoryModal}
-        onSelect={handleCategorySelect}
-        onCancel={handleCategoryCancel}
-      />
-      
-      {/* Show loading/activating state */}
+      <EmergencyCategoryModal visible={showCategoryModal} onSelect={handleCategorySelect} onCancel={() => { setShowCategoryModal(false); router.back(); }} />
       {!showCategoryModal && (
         <View style={styles.activatingContent}>
-          <View style={styles.loadingIcon}>
-            <Ionicons name="sync" size={60} color="#EF4444" />
-          </View>
+          <View style={styles.loadingIcon}><Ionicons name="sync" size={60} color="#EF4444" /></View>
           <Text style={styles.activatingText}>Activating Panic Mode...</Text>
-          <Text style={styles.activatingSubtext}>Notifying nearby security agencies</Text>
+          <Text style={styles.activatingSubtext}>Getting precise location & notifying security</Text>
         </View>
       )}
     </SafeAreaView>
@@ -391,7 +273,7 @@ const styles = StyleSheet.create({
   trackingCategory: { fontSize: 14, color: '#F59E0B', fontWeight: '600', marginBottom: 40 },
   safeButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#10B981', paddingVertical: 18, paddingHorizontal: 40, borderRadius: 16, marginTop: 20 },
   safeButtonText: { fontSize: 20, fontWeight: 'bold', color: '#fff' },
-  safeNote: { fontSize: 14, color: '#64748B', marginTop: 16, textAlign: 'center' },
+  safeNote: { fontSize: 14, color: '#64748B', marginTop: 16, textAlign: 'center', lineHeight: 20 },
   emergencyContent: { flex: 1, alignItems: 'center', padding: 20, paddingTop: 40 },
   emergencyIcon: { width: 120, height: 120, borderRadius: 60, justifyContent: 'center', alignItems: 'center', marginBottom: 24 },
   emergencyTitle: { fontSize: 28, fontWeight: 'bold', color: '#fff', marginBottom: 12 },
