@@ -9,8 +9,8 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Camera, CameraView } from 'expo-camera';
 import * as Location from 'expo-location';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as Network from '@react-native-community/netinfo';
+import * as FileSystem from 'expo-file-system';
+import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import Constants from 'expo-constants';
@@ -29,7 +29,7 @@ export default function VideoReport() {
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [cameraRef, setCameraRef] = useState<any>(null);
+  const cameraRef = useRef<any>(null);
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
   const [location, setLocation] = useState<any>(null);
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
@@ -81,7 +81,7 @@ export default function VideoReport() {
   useEffect(() => {
     requestPermissions();
     
-    const unsubscribe = Network.addEventListener(state => {
+    const unsubscribe = NetInfo.addEventListener(state => {
       setIsOnline(state.isConnected ?? true);
       console.log('[VideoReport] Network state:', state.isConnected ? 'Online' : 'Offline');
     });
@@ -116,10 +116,10 @@ export default function VideoReport() {
 
   const startRecording = async () => {
     console.log('[VideoReport] startRecording called');
-    console.log('[VideoReport] Camera ref exists:', !!cameraRef);
+    console.log('[VideoReport] Camera ref exists:', !!cameraRef.current);
     console.log('[VideoReport] Camera ready:', cameraReady);
     
-    if (!cameraRef || !cameraReady) {
+    if (!cameraRef.current || !cameraReady) {
       Alert.alert('Please Wait', 'Camera is still initializing...');
       return;
     }
@@ -157,7 +157,7 @@ export default function VideoReport() {
     
     try {
       console.log('[VideoReport] Starting camera.recordAsync()...');
-      recordingPromiseRef.current = cameraRef.recordAsync({ 
+      recordingPromiseRef.current = cameraRef.current.recordAsync({ 
         maxDuration: 120, // 2 min max for reasonable file size
         quality: '480p',  // Use 480p to reduce file size significantly vs 720p
         mute: false,
@@ -213,9 +213,9 @@ export default function VideoReport() {
       return;
     }
     
-    if (cameraRef && recordingPromiseRef.current) {
+    if (cameraRef.current && recordingPromiseRef.current) {
       console.log('[VideoReport] Calling cameraRef.stopRecording()');
-      cameraRef.stopRecording();
+      cameraRef.current.stopRecording();
     }
   };
 
@@ -442,10 +442,7 @@ export default function VideoReport() {
   return (
     <View style={styles.fullScreenContainer}>
       <CameraView
-        ref={(ref) => {
-          console.log('[VideoReport] Camera ref callback - ref exists:', !!ref);
-          setCameraRef(ref);
-        }}
+        ref={cameraRef}
         style={styles.fullCamera}
         facing={facing}
         mode="video"
