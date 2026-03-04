@@ -106,10 +106,11 @@ export default function SecurityPanics() {
   };
 
   const getSenderName = (item: any): string => {
-    const name = item.full_name?.trim() || item.user_name?.trim();
-    // Only use user_name if it's not an email address (fallback to email)
-    if (name && name !== item.user_email) return name;
-    return item.user_email || 'Unknown User';
+    const fullName = (item.full_name || '').trim();
+    if (fullName && fullName.length > 0) return fullName;
+    const email = item.user_email || item.email || '';
+    if (email) return email;
+    return 'Unknown User';
   };
 
   const handleRespond = (item: any) => {
@@ -142,7 +143,7 @@ export default function SecurityPanics() {
           <View style={styles.panicInfo}>
             <Text style={styles.panicTitle}>🚨 ACTIVE PANIC</Text>
             <Text style={styles.panicName}>
-              👤 {item.full_name?.trim() || 'Unknown User'}
+              👤 {getSenderName(item)}
             </Text>
             <Text style={styles.panicEmail}>✉️ {item.user_email || 'No email'}</Text>
             {(item.user_phone || item.phone) ? (
