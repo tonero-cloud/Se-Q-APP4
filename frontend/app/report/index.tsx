@@ -227,7 +227,10 @@ export default function VideoReport() {
 
   const onCameraReady = () => {
     console.log('[VideoReport] ✅ Camera ready callback fired');
-    setCameraReady(true);
+    // Delay ensures camera hardware is fully initialized before recording is allowed
+    setTimeout(() => {
+      setCameraReady(true);
+    }, 800);
   };
 
   const toggleFacing = () => {
