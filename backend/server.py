@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Body, Query, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Body, Query, Request, File, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -355,7 +355,7 @@ async def get_profile(user = Depends(get_current_user)):
     return {
         'id': str(user['_id']),
         'email': user['email'],
-        'full_name': (user.get('full_name') or user.get('name') or ''),
+        'full_name': user.get('full_name', ''),
         'phone': user.get('phone'),
         'role': user.get('role', 'civil'),
         'is_premium': user.get('is_premium', False),
@@ -367,35 +367,33 @@ async def get_profile(user = Depends(get_current_user)):
     }
 
 class ProfilePhotoUpdate(BaseModel):
-    photo_data: str  # Base64 encoded image
+    photo_data: str  # Base64 encoded image (kept for backwards compat)
     mime_type: str = "image/jpeg"
 
-@api_router.put("/user/profile-photo")
-async def update_profile_photo(data: ProfilePhotoUpdate, user = Depends(get_current_user)):
-    """Upload and update user profile photo"""
+@api_router.post("/user/profile-photo")
+async def update_profile_photo(
+    photo: UploadFile = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """Upload profile photo via multipart/form-data (avoids proxy body size limits)"""
     try:
-        import base64 as b64lib
-        import uuid as uuidlib
-
-        # Strip data URI prefix if present
-        photo_data = data.photo_data
-        if ',' in photo_data and photo_data.startswith('data:'):
-            photo_data = photo_data.split(',', 1)[1]
-        
-        img_bytes = b64lib.b64decode(photo_data)
-        if len(img_bytes) > 5 * 1024 * 1024:  # 5MB limit
+        content = await photo.read()
+        if len(content) > 5 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Image too large (max 5MB)")
-        
-        # Save to disk
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="Empty file received")
+
         photos_dir = ROOT_DIR / 'uploads' / 'photos'
         photos_dir.mkdir(parents=True, exist_ok=True)
-        
-        ext = 'jpg' if 'jpeg' in (data.mime_type or 'jpeg') else 'png'
-        filename = f"profile_{str(user['_id'])}_{uuidlib.uuid4().hex[:8]}.{ext}"
+
+        content_type = photo.content_type or 'image/jpeg'
+        ext = 'png' if 'png' in content_type else 'jpg'
+        filename = f"profile_{str(user['_id'])}_{uuid.uuid4().hex[:8]}.{ext}"
         file_path = photos_dir / filename
+
         with open(file_path, 'wb') as f:
-            f.write(img_bytes)
-        
+            f.write(content)
+
         photo_url = f"/api/media/photos/{filename}"
         await db.users.update_one(
             {'_id': user['_id']},
@@ -932,7 +930,7 @@ async def track_user(user_id: str, user = Depends(get_current_user)):
 
         return {
             'user_id': user_id,
-            'full_name': target_(user.get('full_name') or user.get('name') or ''),
+            'full_name': target_user.get('full_name', ''),
             'email': target_user.get('email', ''),
             'phone': target_user.get('phone', ''),
             'profile_photo_url': target_user.get('profile_photo_url', None),
@@ -963,7 +961,7 @@ async def get_escort_sessions(user = Depends(get_current_user)):
         latest_loc = s.get('locations', [])[-1] if s.get('locations') else None
         result.append({
             'session_id': str(s['_id']),
-            'user_name': (user_info.get('full_name') or user_info.get('name') or '').strip() or user_info.get('email', 'Unknown'),
+            'user_name': user_info.get('full_name') or user_info.get('email', 'Unknown'),
             'user_email': user_info.get('email', ''),
             'user_phone': user_info.get('phone', ''),
             'started_at': s.get('started_at'),
@@ -1024,8 +1022,8 @@ async def get_nearby_panics(user = Depends(get_current_user)):
         
         result.append({
             'id': str(p['_id']),
-            'user_name': (user_info.get('full_name') or user_info.get('name') or '').strip() or user_info.get('email', 'Unknown'),
-            'full_name': (user_info.get('full_name') or user_info.get('name') or '').strip(),
+            'user_name': (user_info.get('full_name') or '').strip() or user_info.get('email', 'Unknown'),
+            'full_name': (user_info.get('full_name') or '').strip(),
             'user_email': user_info.get('email', 'Unknown'),
             'user_phone': user_info.get('phone', ''),
             'activated_at': p.get('activated_at'),
@@ -1343,7 +1341,7 @@ async def admin_login(login_data: AdminLogin):
         'token': token,
         'user_id': str(user['_id']),
         'email': user['email'],
-        'full_name': (user.get('full_name') or user.get('name') or ''),
+        'full_name': user.get('full_name', ''),
         'role': 'admin'
     }
 
@@ -1647,7 +1645,7 @@ async def admin_all_panics(
         result.append({
             'id': str(p['_id']),
             'user_id': p.get('user_id'),
-            'full_name': (user_info.get('full_name') or user_info.get('name') or '').strip() if user_info else 'Unknown',
+            'full_name': (user_info.get('full_name') or '').strip() if user_info else 'Unknown',
             'user_email': user_info.get('email', 'Unknown') if user_info else 'Unknown',
             'user_phone': user_info.get('phone', '') if user_info else '',
             'profile_photo_url': user_info.get('profile_photo_url') if user_info else None,
@@ -1931,7 +1929,7 @@ async def admin_all_reports(
         result.append({
             'id': str(r['_id']),
             'user_id': r.get('user_id'),
-            'full_name': (user_info.get('full_name') or user_info.get('name') or '').strip() if user_info else ('Anonymous' if r.get('is_anonymous') else 'Unknown'),
+            'full_name': (user_info.get('full_name') or '').strip() if user_info else ('Anonymous' if r.get('is_anonymous') else 'Unknown'),
             'user_email': user_info.get('email', '') if user_info else '',
             'user_phone': user_info.get('phone', '') if user_info else '',
             'type': r.get('type'),
@@ -2090,7 +2088,7 @@ async def security_get_profile(user: dict = Depends(get_current_user)):
     return {
         'id': str(user['_id']),
         'email': user.get('email'),
-        'full_name': (user.get('full_name') or user.get('name') or ''),
+        'full_name': user.get('full_name', ''),
         'phone': user.get('phone', ''),
         'security_sub_role': user.get('security_sub_role', 'team_member'),
         'team_name': user.get('team_name', ''),
@@ -2652,7 +2650,7 @@ async def admin_send_message(
 
 # ===== MEDIA FILE SERVING (with video streaming / range request support) =====
 @app.get("/api/media/{folder}/{filename}")
-async def serve_media_file(folder: str, filename: str, request: Request, token: Optional[str] = None):
+async def serve_media_file(folder: str, filename: str, request: Request):
     """Serve uploaded media files with range-request support for video streaming"""
     file_path = ROOT_DIR / 'uploads' / folder / filename
     if not file_path.exists():
@@ -2784,7 +2782,7 @@ async def get_escort_eta_alerts(user = Depends(get_current_user)):
         minutes_overdue = int((now - s['eta_time']).total_seconds() / 60)
         result.append({
             'session_id': str(s['_id']),
-            'user_name': (user_info.get('full_name') or user_info.get('name') or '').strip() or user_info.get('email', 'Unknown'),
+            'user_name': user_info.get('full_name') or user_info.get('email', 'Unknown'),
             'user_email': user_info.get('email', ''),
             'user_phone': user_info.get('phone', ''),
             'started_at': s.get('started_at'),
