@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator, Alert, RefreshControl, Modal, TextInput } from 'react-native';
+import { View, Text, TouchableOpacity, Pressable, StyleSheet, FlatList, ActivityIndicator, Alert, RefreshControl, Modal, TextInput, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,6 +8,19 @@ import Constants from 'expo-constants';
 import { getAuthToken, clearAuthData } from '../../utils/auth';
 
 const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL;
+
+// Web-compatible alert helper
+const showAlert = (title: string, message: string, buttons?: Array<{text: string, onPress?: () => void}>) => {
+  if (Platform.OS === 'web') {
+    const result = window.confirm(`${title}\n\n${message}`);
+    if (result && buttons) {
+      const confirmButton = buttons.find(b => b.text !== 'Cancel');
+      if (confirmButton?.onPress) confirmButton.onPress();
+    }
+  } else {
+    Alert.alert(title, message, buttons);
+  }
+};
 
 export default function AdminTeams() {
   const router = useRouter();
@@ -54,7 +67,7 @@ export default function AdminTeams() {
 
   const createTeam = async () => {
     if (!newTeamName.trim()) {
-      Alert.alert('Error', 'Please enter a team name');
+      showAlert('Error', 'Please enter a team name');
       return;
     }
     setCreating(true);
@@ -63,12 +76,12 @@ export default function AdminTeams() {
       await axios.post(`${BACKEND_URL}/api/admin/create-team`, {
         name: newTeamName.trim()
       }, { headers: { Authorization: `Bearer ${token}` } });
-      Alert.alert('Success', 'Team created successfully');
+      showAlert('Success', 'Team created successfully');
       setShowCreateModal(false);
       setNewTeamName('');
       loadTeams();
     } catch (error: any) {
-      Alert.alert('Error', error?.response?.data?.detail || 'Failed to create team');
+      showAlert('Error', error?.response?.data?.detail || 'Failed to create team');
     } finally {
       setCreating(false);
     }
@@ -135,13 +148,13 @@ export default function AdminTeams() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.replace('/admin/dashboard')} style={styles.backBtn}>
+        <Pressable onPress={() => router.replace('/admin/dashboard')} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color="#fff" />
-        </TouchableOpacity>
+        </Pressable>
         <Text style={styles.title}>Security Teams</Text>
-        <TouchableOpacity onPress={() => setShowCreateModal(true)}>
+        <Pressable onPress={() => setShowCreateModal(true)} style={styles.addBtn}>
           <Ionicons name="add-circle" size={28} color="#F59E0B" />
-        </TouchableOpacity>
+        </Pressable>
       </View>
 
       <FlatList
@@ -191,6 +204,7 @@ const styles = StyleSheet.create({
   loadingText: { color: '#94A3B8', marginTop: 16 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#1E293B' },
   backBtn: { padding: 4 },
+  addBtn: { padding: 4, cursor: 'pointer' } as any,
   title: { fontSize: 20, fontWeight: '600', color: '#fff' },
   listContent: { padding: 16 },
   teamCard: { backgroundColor: '#1E293B', borderRadius: 16, marginBottom: 12, overflow: 'hidden' },

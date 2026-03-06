@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
-  RefreshControl, Alert, ActivityIndicator, Animated
+  RefreshControl, Alert, ActivityIndicator, Animated, Modal, Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -11,6 +11,19 @@ import Constants from 'expo-constants';
 import { getAuthToken, clearAuthData, getUserMetadata } from '../../utils/auth';
 
 const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL || 'https://ongoing-dev-22.preview.emergentagent.com';
+
+// Web-compatible alert helper
+const showAlert = (title: string, message: string, buttons?: Array<{text: string, onPress?: () => void, style?: string}>) => {
+  if (Platform.OS === 'web') {
+    const confirmed = window.confirm(`${title}\n\n${message}`);
+    if (confirmed && buttons) {
+      const confirmButton = buttons.find(b => b.style === 'destructive' || b.text !== 'Cancel');
+      if (confirmButton?.onPress) confirmButton.onPress();
+    }
+  } else {
+    Alert.alert(title, message, buttons);
+  }
+};
 
 const CATEGORY_COLORS: Record<string, string> = {
   violence: '#EF4444', robbery: '#F97316', kidnapping: '#DC2626',
@@ -70,14 +83,14 @@ export default function AdminDashboard() {
   const onRefresh = async () => { setRefreshing(true); await loadData(); setRefreshing(false); };
 
   const handleLogout = async () => {
-    Alert.alert('Logout', 'Are you sure?', [
+    showAlert('Logout', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Logout', style: 'destructive', onPress: async () => { await clearAuthData(); router.replace('/admin/login'); } }
     ]);
   };
 
   const handleClearUploads = async () => {
-    Alert.alert('Clear All Uploads', 'This will permanently delete all audio and video report files and records. This cannot be undone.', [
+    showAlert('Clear All Uploads', 'This will permanently delete all audio and video report files and records. This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete All',
@@ -88,10 +101,10 @@ export default function AdminDashboard() {
             const res = await axios.delete(`${BACKEND_URL}/api/admin/clear-uploads`, {
               headers: { Authorization: `Bearer ${token}` }, timeout: 30000
             });
-            Alert.alert('✅ Cleared', res.data?.message || 'All uploads cleared.');
+            showAlert('✅ Cleared', res.data?.message || 'All uploads cleared.', [{ text: 'OK' }]);
             loadData();
           } catch (error: any) {
-            Alert.alert('Error', error?.response?.data?.detail || 'Failed to clear uploads.');
+            showAlert('Error', error?.response?.data?.detail || 'Failed to clear uploads.', [{ text: 'OK' }]);
           }
         }
       }
