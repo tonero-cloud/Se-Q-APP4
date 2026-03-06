@@ -1773,6 +1773,28 @@ async def admin_get_security_teams(user: dict = Depends(get_admin_user)):
         })
     return result
 
+
+class CreateTeam(BaseModel):
+    name: str
+
+@api_router.post("/admin/create-team")
+async def admin_create_team(team_data: CreateTeam, user: dict = Depends(get_admin_user)):
+    """Create a new security team"""
+    existing = await db.security_teams.find_one({'name': team_data.name})
+    if existing:
+        raise HTTPException(status_code=400, detail="Team with this name already exists")
+    
+    await db.security_teams.insert_one({
+        'name': team_data.name,
+        'teamLocation': {'type': 'Point', 'coordinates': [0, 0]},
+        'radius_km': 10.0,
+        'created_at': datetime.utcnow(),
+        'created_by': str(user['_id'])
+    })
+    await _log_admin_action(str(user['_id']), 'create_team', 'team', team_data.name, {})
+    return {'message': 'Team created successfully', 'name': team_data.name}
+
+
 @api_router.get("/admin/analytics")
 async def admin_analytics(user: dict = Depends(get_admin_user)):
     """Get analytics data: trends, response times, category breakdowns"""
