@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, TextInput, Alert, ActivityIndicator, FlatList, KeyboardAvoidingView, Platform, Image, Modal } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -151,22 +152,22 @@ export default function Settings() {
       const token = await getAuthToken();
       if (!token) { router.replace('/auth/login'); return; }
 
-      // Use FormData (multipart binary) — avoids the proxy body-size limit
-      // that causes "Not Found" when sending large base64 JSON payloads
-      const formData = new FormData();
-      formData.append('photo', {
-        uri,
-        type: mimeType,
-        name: 'profile.jpg',
-      } as any);
+      // Read file as base64 - more reliable across platforms
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
 
+      // Use JSON body with base64 - avoids multipart issues on web/mobile
       const response = await axios.post(
-        `${BACKEND_URL}/api/user/profile-photo`,
-        formData,
+        `${BACKEND_URL}/api/user/profile-photo-base64`,
+        {
+          photo_base64: base64,
+          mime_type: mimeType,
+        },
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            'Content-Type': 'multipart/form-data',
+            'Content-Type': 'application/json',
           },
           timeout: 30000,
         }

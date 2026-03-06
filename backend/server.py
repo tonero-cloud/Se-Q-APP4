@@ -406,6 +406,50 @@ async def update_profile_photo(
         logger.error(f"Error updating profile photo: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update profile photo: {str(e)}")
 
+
+class ProfilePhotoBase64(BaseModel):
+    photo_base64: str
+    mime_type: str = 'image/jpeg'
+
+@api_router.post("/user/profile-photo-base64")
+async def update_profile_photo_base64(
+    data: ProfilePhotoBase64,
+    user: dict = Depends(get_current_user)
+):
+    """Upload profile photo via base64 encoded JSON - more reliable across platforms"""
+    try:
+        # Decode base64
+        import base64
+        content = base64.b64decode(data.photo_base64)
+        
+        if len(content) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image too large (max 5MB)")
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="Empty image received")
+
+        photos_dir = ROOT_DIR / 'uploads' / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+
+        ext = 'png' if 'png' in data.mime_type else 'jpg'
+        filename = f"profile_{str(user['_id'])}_{uuid.uuid4().hex[:8]}.{ext}"
+        file_path = photos_dir / filename
+
+        with open(file_path, 'wb') as f:
+            f.write(content)
+
+        photo_url = f"/api/media/photos/{filename}"
+        await db.users.update_one(
+            {'_id': user['_id']},
+            {'$set': {'profile_photo_url': photo_url, 'profile_photo_updated_at': datetime.utcnow()}}
+        )
+        return {'message': 'Profile photo updated', 'photo_url': photo_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating profile photo (base64): {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update profile photo: {str(e)}")
+
+
 @api_router.put("/user/customize-app")
 async def customize_app(customization: AppCustomization, user = Depends(get_current_user)):
     await db.users.update_one(
@@ -1006,31 +1050,42 @@ async def get_nearby_panics(user = Depends(get_current_user)):
     for p in panics:
         user_info = await db.users.find_one({'_id': ObjectId(p['user_id'])})
         if not user_info:
-            user_info = {'email': 'Unknown', 'phone': ''}
+            user_info = {'email': 'Unknown', 'phone': '', 'full_name': ''}
         
-        latest_location = p.get('locations', [])[-1] if p.get('locations') else None
+        # Get the INITIAL activation location (most accurate for emergency response)
+        # This is stored in the GeoJSON 'location' field at panic activation time
+        initial_location = p.get('location', {})
+        initial_coords = initial_location.get('coordinates', [0, 0]) if initial_location else [0, 0]
         
-        # Safely get coordinates
-        if latest_location:
-            lat = latest_location.get('latitude', 0)
-            lng = latest_location.get('longitude', 0)
-        elif p.get('location') and p['location'].get('coordinates'):
-            lat = p['location']['coordinates'][1]
-            lng = p['location']['coordinates'][0]
-        else:
-            lat, lng = 0, 0
+        # Also get the latest tracked location for comparison
+        latest_tracked = p.get('locations', [])[-1] if p.get('locations') else None
+        
+        # Use initial coordinates by default (captured at panic activation with high accuracy)
+        lat = initial_coords[1] if len(initial_coords) >= 2 else 0
+        lng = initial_coords[0] if len(initial_coords) >= 2 else 0
+        
+        # Build user name with fallbacks
+        user_full_name = (user_info.get('full_name') or '').strip()
+        user_email = user_info.get('email', 'Unknown')
+        user_phone = user_info.get('phone', '')
         
         result.append({
             'id': str(p['_id']),
-            'user_name': (user_info.get('full_name') or '').strip() or user_info.get('email', 'Unknown'),
-            'full_name': (user_info.get('full_name') or '').strip(),
-            'user_email': user_info.get('email', 'Unknown'),
-            'user_phone': user_info.get('phone', ''),
+            'user_id': str(p['user_id']),
+            'user_name': user_full_name or user_email,
+            'full_name': user_full_name,
+            'user_email': user_email,
+            'user_phone': user_phone,
             'activated_at': p.get('activated_at'),
             'latitude': lat,
             'longitude': lng,
+            'initial_latitude': lat,
+            'initial_longitude': lng,
+            'latest_latitude': latest_tracked.get('latitude', lat) if latest_tracked else lat,
+            'latest_longitude': latest_tracked.get('longitude', lng) if latest_tracked else lng,
             'location_count': len(p.get('locations', [])),
-            'emergency_category': p.get('emergency_category', 'other')
+            'emergency_category': p.get('emergency_category', 'other'),
+            'profile_photo_url': user_info.get('profile_photo_url')
         })
     
     return result

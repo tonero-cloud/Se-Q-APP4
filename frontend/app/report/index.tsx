@@ -202,8 +202,11 @@ export default function VideoReport() {
     }
   };
 
-  const stopRecording = () => {
-    if (!isRecording) return;
+  const stopRecording = async () => {
+    if (!isRecording) {
+      console.log('[VideoReport] stopRecording: Not recording, ignoring');
+      return;
+    }
     
     const currentDuration = durationRef.current;
     console.log('[VideoReport] stopRecording called, duration:', currentDuration);
@@ -213,9 +216,17 @@ export default function VideoReport() {
       return;
     }
     
-    if (cameraRef.current && recordingPromiseRef.current) {
-      console.log('[VideoReport] Calling cameraRef.stopRecording()');
-      cameraRef.current.stopRecording();
+    try {
+      if (cameraRef.current) {
+        console.log('[VideoReport] Calling cameraRef.stopRecording()');
+        await cameraRef.current.stopRecording();
+        console.log('[VideoReport] stopRecording() completed');
+      } else {
+        console.warn('[VideoReport] Camera ref not available during stop');
+      }
+    } catch (error: any) {
+      console.error('[VideoReport] Error stopping recording:', error);
+      // Even if stop fails, the recording promise should resolve/reject
     }
   };
 
