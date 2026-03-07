@@ -24,12 +24,17 @@ export default function SecurityReports() {
   const [playbackPosition, setPlaybackPosition] = useState(0);
   const [userRole, setUserRole] = useState<string>('security');
   const [selectedVideoUrl, setSelectedVideoUrl] = useState<string | null>(null);
+  const [videoLoading, setVideoLoading] = useState(true);
+  const [videoError, setVideoError] = useState(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [locationModal, setLocationModal] = useState<{ visible: boolean; lat: number; lng: number; title: string } | null>(null);
 
   // Refresh on focus
   useFocusEffect(
     useCallback(() => {
       loadReports();
+      // Load token for video playback
+      getAuthToken().then(t => setAuthToken(t));
       return () => {
         // Cleanup audio on unmount
         if (currentSound) {
@@ -303,31 +308,60 @@ export default function SecurityReports() {
     );
   };
 
-  // Video player modal
+  // Video player modal with proper authentication
   if (selectedVideoUrl) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={[styles.container, { backgroundColor: '#000' }]}>
         <View style={styles.videoHeader}>
-          <TouchableOpacity onPress={() => setSelectedVideoUrl(null)}>
+          <TouchableOpacity onPress={() => { setSelectedVideoUrl(null); setVideoError(false); setVideoLoading(true); }}>
             <Ionicons name="close" size={28} color="#fff" />
           </TouchableOpacity>
           <Text style={styles.videoTitle}>Video Report</Text>
           <View style={{ width: 28 }} />
         </View>
         <View style={styles.videoContainer}>
-          <Video
-            source={{ uri: selectedVideoUrl }}
-            style={styles.video}
-            useNativeControls
-            resizeMode={ResizeMode.CONTAIN}
-            shouldPlay
-            isLooping={false}
-            onError={(error) => {
-              Alert.alert('Playback Error', 'Unable to play this video. It may still be processing.', [
-                { text: 'OK', onPress: () => setSelectedVideoUrl(null) }
-              ]);
-            }}
-          />
+          {videoLoading && !videoError && (
+            <View style={styles.videoLoadingOverlay}>
+              <ActivityIndicator size="large" color="#8B5CF6" />
+              <Text style={styles.videoLoadingText}>Loading video...</Text>
+            </View>
+          )}
+          {videoError ? (
+            <View style={styles.videoErrorContainer}>
+              <Ionicons name="cloud-offline-outline" size={60} color="#64748B" />
+              <Text style={styles.videoErrorTitle}>Video Unavailable</Text>
+              <Text style={styles.videoErrorText}>This video could not be played. It may still be processing.</Text>
+              <TouchableOpacity style={styles.videoRetryBtn} onPress={() => { setVideoError(false); setVideoLoading(true); }}>
+                <Ionicons name="refresh" size={18} color="#fff" />
+                <Text style={styles.videoRetryText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Video
+              source={{ 
+                uri: (() => {
+                  const base = selectedVideoUrl.startsWith('http') ? selectedVideoUrl : `${BACKEND_URL}${selectedVideoUrl}`;
+                  return authToken ? `${base}?token=${encodeURIComponent(authToken)}` : base;
+                })(),
+                headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : undefined,
+              }}
+              style={styles.video}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+              shouldPlay
+              isLooping={false}
+              onReadyForDisplay={() => setVideoLoading(false)}
+              onLoad={() => setVideoLoading(false)}
+              onPlaybackStatusUpdate={(status: any) => {
+                if (status.isLoaded) setVideoLoading(false);
+              }}
+              onError={(err) => {
+                console.error('[SecurityVideoPlayer] Error:', JSON.stringify(err));
+                setVideoLoading(false);
+                setVideoError(true);
+              }}
+            />
+          )}
         </View>
       </SafeAreaView>
     );
@@ -416,4 +450,11 @@ const styles = StyleSheet.create({
   videoTitle: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
   videoContainer: { flex: 1, backgroundColor: '#000', justifyContent: 'center' },
   video: { width: '100%', height: 300 },
+  videoLoadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
+  videoLoadingText: { color: '#94A3B8', marginTop: 12 },
+  videoErrorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
+  videoErrorTitle: { fontSize: 18, fontWeight: '600', color: '#fff', marginTop: 16 },
+  videoErrorText: { fontSize: 14, color: '#94A3B8', textAlign: 'center', marginTop: 8 },
+  videoRetryBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#8B5CF6', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 8, marginTop: 20 },
+  videoRetryText: { color: '#fff', fontWeight: '600' },
 });

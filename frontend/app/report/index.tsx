@@ -125,25 +125,18 @@ export default function VideoReport() {
       return;
     }
 
+    // Get location in background - don't block recording
     if (!location) {
-      try {
-        console.log('[VideoReport] Getting location before recording...');
-        const loc = await Location.getCurrentPositionAsync({ 
-          accuracy: Location.Accuracy.High,
-          timeInterval: 1000,
-          distanceInterval: 0
-        });
+      console.log('[VideoReport] Getting location in background...');
+      Location.getCurrentPositionAsync({ 
+        accuracy: Location.Accuracy.Balanced,
+        timeInterval: 5000,
+      }).then(loc => {
         setLocation(loc);
-        console.log('[VideoReport] Location obtained:', loc.coords.latitude, loc.coords.longitude);
-      } catch (err) {
-        console.error('[VideoReport] Location error:', err);
-        Alert.alert(
-          'Location Required',
-          'Location is required for security reports. Please enable location services.',
-          [{ text: 'OK' }]
-        );
-        return;
-      }
+        console.log('[VideoReport] Background location obtained:', loc.coords.latitude, loc.coords.longitude);
+      }).catch(err => {
+        console.warn('[VideoReport] Background location failed (non-blocking):', err);
+      });
     }
 
     durationRef.current = 0;
@@ -157,16 +150,17 @@ export default function VideoReport() {
     setRecordingStartTime(startTime);
     
     try {
-      console.log('[VideoReport] Starting camera.recordAsync() with 360p compression...');
+      console.log('[VideoReport] Starting camera.recordAsync() with compression...');
       recordingPromiseRef.current = cameraRef.current.recordAsync({ 
         maxDuration: 180, // 3 min max
-        // Using 360p for highly compressed output
-        // Target: 5-7MB for 3 minutes
-        // Calculation: 300 Kbps * 180 sec / 8 = ~6.75 MB
-        quality: '360p',  // Lower resolution for smaller files
+        // Use lowest quality available for smallest file size
+        // Note: 'quality' values differ by platform - Android uses CamcorderProfile
+        quality: '480p',  // 480p is more universally supported than 360p
         mute: false,
-        videoBitrate: 300000, // 300 Kbps - highly compressed
-        // Note: Some devices may have minimum bitrate limits
+        // Lower bitrate for smaller files - target ~2MB per minute
+        videoBitrate: 500000, // 500 Kbps (0.5 Mbps)
+        // For codec control (if supported)
+        codec: 'avc1', // H.264 codec for better compression
       });
       
       const video = await recordingPromiseRef.current;
