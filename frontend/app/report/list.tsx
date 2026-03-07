@@ -106,7 +106,7 @@ export default function ReportList() {
       }
 
       // Read the video file
-      const FileSystem = require('expo-file-system');
+      const FileSystem = require('expo-file-system/legacy');
       const fileInfo = await FileSystem.getInfoAsync(pendingReport.uri);
       
       if (!fileInfo.exists) {
