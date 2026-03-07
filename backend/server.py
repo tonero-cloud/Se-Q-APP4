@@ -729,29 +729,107 @@ class VideoUpload(BaseModel):
     longitude: float
     duration_seconds: Optional[int] = 0
 
+# Import video transcoder
+from video_transcoder import (
+    transcode_video_async, 
+    get_video_info, 
+    should_transcode_sync,
+    select_profile,
+    transcode_queue
+)
+
 @api_router.post("/report/upload-video")
 async def upload_video_report(video: VideoUpload, user = Depends(get_current_user)):
-    """Upload video report with actual file data"""
+    """Upload video report with automatic server-side transcoding (WhatsApp-style compression)"""
     if user.get('role') != 'civil':
         raise HTTPException(status_code=403, detail="Only civil users can create reports")
     
     try:
         import base64
         import uuid
+        import tempfile
+        import shutil
         
         # Decode base64 video data
         video_bytes = base64.b64decode(video.video_data)
+        original_size_mb = len(video_bytes) / (1024 * 1024)
+        logger.info(f"Received video upload: {original_size_mb:.2f}MB")
         
-        # Generate unique filename
-        filename = f"video_{str(user['_id'])}_{uuid.uuid4().hex[:8]}.mp4"
+        # Generate unique filenames
+        unique_id = uuid.uuid4().hex[:8]
+        original_filename = f"video_orig_{str(user['_id'])}_{unique_id}.mp4"
+        compressed_filename = f"video_{str(user['_id'])}_{unique_id}.mp4"
         
-        # Try to upload to Firebase Storage
-        file_url = await firebase_service.upload_file(
-            video_bytes,
-            filename,
-            'video/mp4',
-            'videos'
-        )
+        # Save original video temporarily
+        uploads_dir = ROOT_DIR / 'uploads' / 'videos'
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        
+        original_path = uploads_dir / original_filename
+        compressed_path = uploads_dir / compressed_filename
+        
+        with open(original_path, 'wb') as f:
+            f.write(video_bytes)
+        
+        # Determine transcoding strategy
+        video_info = get_video_info(str(original_path))
+        duration = video_info.get('duration', 0)
+        
+        # Select profile based on video duration (target 5-7MB for 3 min)
+        profile = select_profile(str(original_path), target_size_mb=7.0)
+        logger.info(f"Selected transcoding profile: {profile} for {duration:.1f}s video")
+        
+        # Hybrid approach: sync for short videos, async for long
+        if should_transcode_sync(str(original_path)):
+            # Synchronous transcoding for videos under 1 minute
+            logger.info("Starting synchronous transcoding...")
+            success, message, transcode_info = await transcode_video_async(
+                str(original_path),
+                str(compressed_path),
+                profile
+            )
+            
+            if success and compressed_path.exists():
+                # Use compressed video
+                final_filename = compressed_filename
+                # Remove original to save space
+                original_path.unlink()
+                logger.info(f"Transcoding complete: {transcode_info.get('input_size_mb', 0):.2f}MB → {transcode_info.get('output_size_mb', 0):.2f}MB")
+            else:
+                # Fallback to original if transcoding failed
+                logger.warning(f"Transcoding failed ({message}), using original")
+                final_filename = original_filename
+                shutil.move(str(original_path), str(uploads_dir / original_filename.replace('_orig', '')))
+                final_filename = original_filename.replace('_orig', '')
+        else:
+            # For longer videos, save immediately and queue transcoding
+            logger.info(f"Queueing async transcoding for {duration:.1f}s video")
+            final_filename = original_filename  # Will be updated when transcoding completes
+            
+            # Queue transcoding job
+            async def on_transcode_complete(job_id, success, message, info):
+                if success:
+                    # Update report with compressed video URL
+                    await db.civil_reports.update_one(
+                        {'file_url': f"/api/media/videos/{original_filename}"},
+                        {'$set': {
+                            'file_url': f"/api/media/videos/{compressed_filename}",
+                            'transcoding_complete': True,
+                            'transcode_info': info
+                        }}
+                    )
+                    # Remove original
+                    if original_path.exists():
+                        original_path.unlink()
+                    logger.info(f"Async transcoding complete for job {job_id}")
+            
+            await transcode_queue.enqueue(
+                str(original_path),
+                str(compressed_path),
+                profile,
+                on_transcode_complete
+            )
+        
+        file_url = f"/api/media/videos/{final_filename}"
         
         # Create report record
         report_data = {
@@ -762,7 +840,9 @@ async def upload_video_report(video: VideoUpload, user = Depends(get_current_use
             'file_url': file_url,
             'thumbnail': None,
             'uploaded': True,
-            'duration_seconds': video.duration_seconds,
+            'duration_seconds': video.duration_seconds or int(duration),
+            'original_size_mb': round(original_size_mb, 2),
+            'transcoding_complete': should_transcode_sync(str(uploads_dir / final_filename)) if (uploads_dir / final_filename).exists() else False,
             'location': {
                 'type': 'Point',
                 'coordinates': [video.longitude, video.latitude]
@@ -798,7 +878,9 @@ async def upload_video_report(video: VideoUpload, user = Depends(get_current_use
         return {
             'report_id': str(result.inserted_id),
             'file_url': file_url,
-            'message': 'Video report uploaded successfully'
+            'message': 'Video report uploaded successfully',
+            'original_size_mb': round(original_size_mb, 2),
+            'transcoded': should_transcode_sync(str(original_path)) if original_path.exists() else True
         }
         
     except Exception as e:
@@ -2907,6 +2989,8 @@ async def startup():
     await create_indexes()
     await create_default_admins()
     await create_default_invite_codes()
+    # Start the video transcoding queue worker
+    await transcode_queue.start_worker()
     logger.info("MongoDB indexes created and default admins initialized")
 
 async def create_default_admins():
