@@ -2,7 +2,7 @@
   "expo": {
     "name": "SafeGuard",
     "slug": "se-q2-claude",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "safeguard",
@@ -101,7 +101,7 @@
       "eas": {
         "projectId": "8303b5ae-ee2f-46ff-a84a-f248ca7b3536"
       },
-      "backendUrl": "https://ongoing-dev-22.preview.emergentagent.com",
+      "backendUrl": "https://escort-track-app.preview.emergentagent.com",
       "router": {
         "origin": false
       }
