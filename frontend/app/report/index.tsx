@@ -35,6 +35,7 @@ export default function VideoReport() {
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [savedDuration, setSavedDuration] = useState(0);
+  const [recordingFileSize, setRecordingFileSize] = useState<number>(0);
   const [cameraReady, setCameraReady] = useState(false);
   const [showCaptionModal, setShowCaptionModal] = useState(false);
   const [zoom, setZoom] = useState(0);
@@ -156,12 +157,16 @@ export default function VideoReport() {
     setRecordingStartTime(startTime);
     
     try {
-      console.log('[VideoReport] Starting camera.recordAsync()...');
+      console.log('[VideoReport] Starting camera.recordAsync() with 360p compression...');
       recordingPromiseRef.current = cameraRef.current.recordAsync({ 
-        maxDuration: 120, // 2 min max for reasonable file size
-        quality: '480p',  // Use 480p to reduce file size significantly vs 720p
+        maxDuration: 180, // 3 min max
+        // Using 360p for highly compressed output
+        // Target: 5-7MB for 3 minutes
+        // Calculation: 300 Kbps * 180 sec / 8 = ~6.75 MB
+        quality: '360p',  // Lower resolution for smaller files
         mute: false,
-        videoBitrate: 1500000, // 1.5 Mbps for manageable upload sizes
+        videoBitrate: 300000, // 300 Kbps - highly compressed
+        // Note: Some devices may have minimum bitrate limits
       });
       
       const video = await recordingPromiseRef.current;
@@ -176,13 +181,15 @@ export default function VideoReport() {
       
       if (video && video.uri) {
         const fileInfo = await FileSystem.getInfoAsync(video.uri);
-        console.log('[VideoReport] File info - Size:', fileInfo.size, 'Exists:', fileInfo.exists);
+        const fileSizeMB = fileInfo.size ? (fileInfo.size / (1024 * 1024)) : 0;
+        console.log('[VideoReport] File info - Size:', fileInfo.size, 'bytes (', fileSizeMB.toFixed(2), 'MB), Exists:', fileInfo.exists);
         
         if (fileInfo.exists && fileInfo.size && fileInfo.size > 0) {
           setRecordingUri(video.uri);
+          setRecordingFileSize(fileInfo.size);
           setSavedDuration(finalDuration);
           setShowCaptionModal(true);
-          console.log('[VideoReport] ✅ Video saved successfully');
+          console.log('[VideoReport] ✅ Video saved successfully - Size:', fileSizeMB.toFixed(2), 'MB');
         } else {
           throw new Error('Video file is empty or invalid');
         }
@@ -589,6 +596,13 @@ export default function VideoReport() {
               </Text>
             </View>
             
+            <View style={styles.fileSizeDisplay}>
+              <Ionicons name="document" size={20} color="#3B82F6" />
+              <Text style={styles.fileSizeText}>
+                File Size: {recordingFileSize > 0 ? (recordingFileSize / (1024 * 1024)).toFixed(2) : '0'} MB
+              </Text>
+            </View>
+            
             <Text style={styles.inputLabel}>Caption (Optional)</Text>
             <TextInput
               style={styles.captionInput}
@@ -726,10 +740,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 12,
-    marginBottom: 16,
+    marginBottom: 8,
     alignSelf: 'flex-start'
   },
   durationText: { fontSize: 15, fontWeight: '600', color: '#10B981' },
+  fileSizeDisplay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#3B82F620',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginBottom: 16,
+    alignSelf: 'flex-start'
+  },
+  fileSizeText: { fontSize: 15, fontWeight: '600', color: '#3B82F6' },
   inputLabel: { color: '#94A3B8', marginBottom: 8, fontSize: 14 },
   captionInput: { 
     backgroundColor: '#0F172A', borderRadius: 12, padding: 16, color: '#fff', 
