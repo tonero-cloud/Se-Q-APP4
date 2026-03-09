@@ -1,10 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Animated, Vibration } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Animated, Vibration, AppState } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import axios from 'axios';
+import Constants from 'expo-constants';
 import { getAuthToken, getUserMetadata } from '../utils/auth';
+
+const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL;
 
 type ScreenMode = 'loading' | 'pin_lock' | 'panic_prompt' | 'disguise_game';
 
@@ -20,10 +24,19 @@ export default function Index() {
   const [gameScore, setGameScore] = useState(0);
   const [gameTarget, setGameTarget] = useState<{x: number; y: number} | null>(null);
   const gameInterval = useRef<any>(null);
+  const appStateRef = useRef(AppState.currentState);
+  const isCheckingAuth = useRef(false);
 
   useEffect(() => {
     const timer = setTimeout(() => { checkAuth(); }, 100);
-    return () => clearTimeout(timer);
+    
+    // Listen for app state changes (background/foreground)
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    
+    return () => {
+      clearTimeout(timer);
+      subscription.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -34,6 +47,53 @@ export default function Index() {
       return () => { if (gameInterval.current) clearInterval(gameInterval.current); };
     }
   }, [mode]);
+
+  // Handle app coming back from background
+  const handleAppStateChange = async (nextAppState: string) => {
+    if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
+      console.log('[Index] App returned to foreground');
+      // Check if user has active panic - show PIN lock
+      const metadata = await getUserMetadata();
+      if (metadata?.role === 'civil') {
+        const hasActivePanic = await checkBackendPanicStatus();
+        if (hasActivePanic) {
+          setMode('pin_lock');
+          setPinInput('');
+          setPinError('');
+        }
+      }
+    }
+    appStateRef.current = nextAppState;
+  };
+
+  // Check backend for active panic status
+  const checkBackendPanicStatus = async (): Promise<boolean> => {
+    try {
+      const token = await getAuthToken();
+      if (!token) return false;
+      
+      const response = await axios.get(`${BACKEND_URL}/api/panic/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 5000
+      });
+      
+      if (response.data?.is_active) {
+        // Sync local storage
+        await AsyncStorage.setItem('active_panic', JSON.stringify({
+          panic_id: response.data.panic_id,
+          activated_at: response.data.activated_at
+        }));
+        return true;
+      } else {
+        await AsyncStorage.removeItem('active_panic');
+        return false;
+      }
+    } catch (err) {
+      // Fallback to local storage
+      const localPanic = await AsyncStorage.getItem('active_panic');
+      return !!localPanic;
+    }
+  };
 
   const triggerDisguiseCustomization = async () => {
     try {
@@ -48,17 +108,36 @@ export default function Index() {
   };
 
   const checkAuth = async () => {
+    if (isCheckingAuth.current) return;
+    isCheckingAuth.current = true;
+    
     try {
       const token = await getAuthToken();
       const metadata = await getUserMetadata();
-      if (!token) { setTimeout(() => router.replace('/auth/login'), 100); return; }
+      
+      if (!token) { 
+        setTimeout(() => router.replace('/auth/login'), 100); 
+        return; 
+      }
+      
       setUserRole(metadata.role);
-      // If panic was active, show PIN lock screen
-      const activePanic = await AsyncStorage.getItem('active_panic');
-      if (activePanic && metadata.role === 'civil') {
-        setMode('pin_lock');
+      
+      // For civil users, check if there's an active panic (from backend first, then local)
+      if (metadata.role === 'civil') {
+        const hasActivePanic = await checkBackendPanicStatus();
+        
+        if (hasActivePanic) {
+          console.log('[Index] Active panic found - showing PIN lock');
+          setMode('pin_lock');
+          return;
+        }
+        
+        // No active panic - show normal home or panic prompt
+        setMode('panic_prompt');
         return;
       }
+      
+      // Security and Admin users go directly to their dashboards
       if (metadata.role === 'security') {
         setTimeout(() => router.replace('/security/home'), 100);
       } else if (metadata.role === 'admin') {
@@ -70,6 +149,8 @@ export default function Index() {
       console.error('[Index] Auth check error:', err);
       setError('Failed to check authentication');
       setTimeout(() => router.replace('/auth/login'), 1000);
+    } finally {
+      isCheckingAuth.current = false;
     }
   };
 
@@ -87,14 +168,17 @@ export default function Index() {
   const handlePinSubmit = async (pin: string) => {
     try {
       const savedPin = await AsyncStorage.getItem('security_pin');
+      
+      // If no PIN is set, just go to panic-active
       if (!savedPin) {
-        await AsyncStorage.removeItem('active_panic');
-        router.replace('/civil/home');
+        router.replace('/civil/panic-active');
         return;
       }
+      
       if (pin === savedPin) {
         // ✅ Correct PIN — navigate to panic-active so "I'm Safe Now" is accessible
-        setPinInput(''); setPinError('');
+        setPinInput('');
+        setPinError('');
         router.replace('/civil/panic-active');
       } else {
         // ❌ Wrong PIN → disguise game
@@ -104,7 +188,9 @@ export default function Index() {
         shakePinBox();
         setTimeout(() => setMode('disguise_game'), 900);
       }
-    } catch (err) { console.error('[Index] PIN error:', err); }
+    } catch (err) {
+      console.error('[Index] PIN error:', err);
+    }
   };
 
   const handlePinKey = (key: string) => {
