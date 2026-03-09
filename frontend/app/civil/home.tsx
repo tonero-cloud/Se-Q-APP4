@@ -44,9 +44,35 @@ export default function CivilHome() {
       return;
     }
 
-    // Check for active panic
-    const activePanic = await AsyncStorage.getItem('active_panic');
-    setHasActivePanic(!!activePanic);
+    // Check for active panic - sync with backend first, then fallback to local storage
+    try {
+      const token = await getAuthToken();
+      const response = await axios.get(`${BACKEND_URL}/api/panic/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 5000
+      });
+      const backendHasPanic = response.data?.is_active === true;
+      
+      if (backendHasPanic) {
+        // Sync local storage with backend
+        await AsyncStorage.setItem('active_panic', JSON.stringify({
+          panic_id: response.data.panic_id,
+          activated_at: response.data.activated_at
+        }));
+        setHasActivePanic(true);
+        console.log('[CivilHome] Active panic found on backend, synced locally');
+      } else {
+        // No active panic on backend, clear local storage
+        await AsyncStorage.removeItem('active_panic');
+        setHasActivePanic(false);
+        console.log('[CivilHome] No active panic on backend');
+      }
+    } catch (err) {
+      // Fallback to local storage if backend check fails
+      const activePanic = await AsyncStorage.getItem('active_panic');
+      setHasActivePanic(!!activePanic);
+      console.log('[CivilHome] Backend panic check failed, using local:', !!activePanic);
+    }
 
     // Load app customization
     try {

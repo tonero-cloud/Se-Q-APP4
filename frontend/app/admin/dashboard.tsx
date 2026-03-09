@@ -157,8 +157,8 @@ export default function AdminDashboard() {
         <View style={styles.statsGrid}>
           {[
             { title: 'Total Users', value: stats?.total_users || 0, icon: 'people', color: '#3B82F6', route: '/admin/users' },
-            { title: 'Civil Users', value: stats?.civil_users || 0, icon: 'person', color: '#10B981', route: '/admin/users' },
-            { title: 'Security', value: stats?.security_users || 0, icon: 'shield', color: '#F59E0B', route: '/admin/users' },
+            { title: 'Civil Users', value: stats?.civil_users || 0, icon: 'person', color: '#10B981', route: '/admin/users?filter=civil' },
+            { title: 'Security', value: stats?.security_users || 0, icon: 'shield', color: '#F59E0B', route: '/admin/users?filter=security' },
             { title: 'Active Panics', value: activePanics, icon: 'alert-circle', color: '#EF4444', route: '/admin/panics', highlight: activePanics > 0 },
           ].map((s) => (
             <TouchableOpacity key={s.title} style={[styles.statCard, { borderLeftColor: s.color }]} onPress={() => router.push(s.route as any)}>

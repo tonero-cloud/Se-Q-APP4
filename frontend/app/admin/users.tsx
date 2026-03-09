@@ -15,7 +15,9 @@ export default function AdminUsers() {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [roleFilter, setRoleFilter] = useState(params.role as string || '');
+  // Support both 'role' and 'filter' query params for flexibility
+  const initialFilter = (params.filter as string) || (params.role as string) || '';
+  const [roleFilter, setRoleFilter] = useState(initialFilter);
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {

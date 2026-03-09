@@ -129,27 +129,33 @@ export default function SecurityPanics() {
 
     return (
       <View style={styles.panicCard}>
-        <View style={[styles.categoryBadge, { backgroundColor: `${categoryInfo.color}20` }]}>
-          <Ionicons name={categoryInfo.icon as any} size={18} color={categoryInfo.color} />
-          <Text style={[styles.categoryText, { color: categoryInfo.color }]}>
-            {categoryInfo.label}
-          </Text>
+        {/* Top row: ACTIVE PANIC on left, Emergency Category on right */}
+        <View style={styles.panicTopRow}>
+          <View style={styles.activePanicBadge}>
+            <Ionicons name="alert-circle" size={16} color="#EF4444" />
+            <Text style={styles.activePanicText}>ACTIVE PANIC</Text>
+          </View>
+          <View style={[styles.categoryBadge, { backgroundColor: `${categoryInfo.color}20` }]}>
+            <Ionicons name={categoryInfo.icon as any} size={16} color={categoryInfo.color} />
+            <Text style={[styles.categoryText, { color: categoryInfo.color }]}>
+              {categoryInfo.label}
+            </Text>
+          </View>
         </View>
 
         <View style={styles.panicHeader}>
           <View style={styles.panicIcon}>
-            <Ionicons name="alert-circle" size={36} color="#EF4444" />
+            <Ionicons name="person-circle" size={44} color="#3B82F6" />
           </View>
           <View style={styles.panicInfo}>
-            <Text style={styles.panicTitle}>🚨 ACTIVE PANIC</Text>
             <Text style={styles.panicName}>
-              👤 {getSenderName(item)}
+              {getSenderName(item)}
             </Text>
-            <Text style={styles.panicEmail}>✉️ {item.user_email || 'No email'}</Text>
+            <Text style={styles.panicEmail}>{item.user_email || 'No email'}</Text>
             {(item.user_phone || item.phone) ? (
-              <Text style={styles.panicPhone}>📞 {item.user_phone || item.phone}</Text>
+              <Text style={styles.panicPhone}>{item.user_phone || item.phone}</Text>
             ) : (
-              <Text style={styles.panicPhoneEmpty}>📞 No phone on file</Text>
+              <Text style={styles.panicPhoneEmpty}>No phone on file</Text>
             )}
           </View>
         </View>
@@ -286,15 +292,18 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   listContent: { padding: 16 },
   panicCard: { backgroundColor: '#1E293B', borderRadius: 16, padding: 16, marginBottom: 16, borderLeftWidth: 4, borderLeftColor: '#EF4444' },
-  categoryBadge: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, gap: 6, marginBottom: 12 },
-  categoryText: { fontSize: 13, fontWeight: '600' },
+  panicTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  activePanicBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EF444420', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, gap: 6 },
+  activePanicText: { fontSize: 12, fontWeight: '800', color: '#EF4444', letterSpacing: 0.5 },
+  categoryBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, gap: 6 },
+  categoryText: { fontSize: 12, fontWeight: '600' },
   panicHeader: { flexDirection: 'row', alignItems: 'flex-start' },
-  panicIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#EF444420', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  panicIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#3B82F620', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
   panicInfo: { flex: 1 },
   panicTitle: { fontSize: 16, fontWeight: 'bold', color: '#EF4444', marginBottom: 4 },
-  panicName: { fontSize: 16, fontWeight: '700', color: '#fff', marginBottom: 3 },
+  panicName: { fontSize: 17, fontWeight: '700', color: '#fff', marginBottom: 4 },
   panicEmail: { fontSize: 13, color: '#94A3B8', marginBottom: 3 },
-  panicPhone: { fontSize: 13, color: '#10B981', fontWeight: '500' },
+  panicPhone: { fontSize: 14, color: '#10B981', fontWeight: '600' },
   panicPhoneEmpty: { fontSize: 13, color: '#475569', fontStyle: 'italic' },
   panicDetails: { marginTop: 16, backgroundColor: '#0F172A', borderRadius: 12, padding: 12 },
   detailRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },

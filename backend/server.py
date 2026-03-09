@@ -491,6 +491,27 @@ async def update_emergency_contacts(data: EmergencyContactsUpdate, user = Depend
     )
     return {'message': 'Emergency contacts updated', 'count': len(valid_contacts)}
 
+
+@api_router.get("/panic/status")
+async def get_panic_status(user = Depends(get_current_user)):
+    """Get current user's panic status - used to sync state after app restart"""
+    if user.get('role') != 'civil':
+        return {'is_active': False}
+    
+    active_panic = await db.active_panics.find_one({
+        'user_id': str(user['_id']),
+        'is_active': True
+    })
+    
+    if active_panic:
+        return {
+            'is_active': True,
+            'panic_id': str(active_panic['_id']),
+            'activated_at': active_panic.get('activated_at'),
+            'emergency_category': active_panic.get('emergency_category', 'other')
+        }
+    return {'is_active': False}
+
 # ===== CIVIL USER ROUTES =====
 @api_router.post("/panic/activate")
 async def activate_panic(panic_data: LocationPoint, user = Depends(get_current_user)):
