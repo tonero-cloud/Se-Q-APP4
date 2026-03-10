@@ -105,9 +105,18 @@
 user_problem_statement: |
   Security-based mobile App (SafeGuard) with 3 dashboards - Civil, Security, and Admin.
   Features: Panic buttons, Audio/Video reports, Security Escort GPS tracking.
-  Issues reported by user: Video recording broken, Panic button not closing app, Settings photo upload error,
-  Security Active Panics not showing user details, Admin routes returning "Unmatched Route", 
-  Security Map not displaying map, Delete uploads giving 404 error.
+  
+  CURRENT FIXES (from GitHub repo clone):
+  1. Clear all uploads and Panic emergencies everywhere 
+  2. Fix Panic button persistence - doesn't remember panic state when app minimizes/closes
+  3. PIN input should display when returning to app if panic is active
+  4. Active Panics page on Security Dashboard should display ALL recorded GPS coordinates (like Escort)
+  5. Add Calendar icon for date filter to Evidence Library in Admin Dashboard
+  6. Security Map page on Admin Dashboard should match Nearby Security on Security Dashboard
+     - Remove Active Panics from Security Map
+     - Show only security teams as blue dots
+     - Below map: list of security personnel (clickable for full details)
+  7. Track Users page in Admin Dashboard should match Security Dashboard version
 
 backend:
   - task: "User Authentication (Login/Register)"
@@ -268,6 +277,63 @@ backend:
       - working: true
         agent: "main"
         comment: "Escort sessions and ETA alerts endpoints exist"
+
+  - task: "Admin Clear Panics"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Added DELETE /api/admin/clear-panics endpoint to clear all panic events"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED - DELETE /api/admin/clear-panics working correctly with admin auth. Clears panic_events and active_panics collections. Returns proper response with deletion counts."
+
+  - task: "Admin Reset All Data"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Added DELETE /api/admin/reset-all-data endpoint for complete data wipe"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED - DELETE /api/admin/reset-all-data working correctly with admin auth. Comprehensive cleanup of panic_events, active_panics, civil_reports, escort_sessions, and associated files. Returns detailed deletion counts."
+
+  - task: "Panic Status Sync Backend"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Fixed GET /api/panic/status to check both panic_events and active_panics collections"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED - GET /api/panic/status working correctly for civil users. Returns proper JSON with required is_active field. Tested with registered civil user testcivil@test.com, returns {is_active: false} when no active panic."
+
+  - task: "Nearby Panics Location History"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Updated GET /api/security/nearby-panics to return full location_history array"
 
 frontend:
   - task: "NativeMap Web Component"
@@ -444,3 +510,37 @@ agent_communication:
       Backend URL: https://escort-track-app.preview.emergentagent.com/api
       All 8/8 comprehensive backend tests PASSED including existing admin endpoints.
       No critical backend issues found. All API endpoints working as expected.
+
+  - agent: "testing"
+    message: |
+      SAFEGUARD BACKEND PRIORITY TESTING COMPLETED - ALL NEW ADMIN ENDPOINTS WORKING
+      
+      ✅ Successfully tested all 4 PRIORITY endpoints from review request:
+      
+      1. **Admin Login** - POST /api/auth/login
+         - ✅ Working perfectly with credentials: anthonyezedinachi@gmail.com / Admin123!
+         - Token generation successful, proper authentication working
+      
+      2. **Admin Clear Panics** - DELETE /api/admin/clear-panics (NEW ENDPOINT)
+         - ✅ Working correctly with admin authentication required
+         - Clears panic_events and active_panics collections
+         - Returns proper response: "Cleared 0 panic events and 0 active panics" (expected as DB empty)
+      
+      3. **Admin Reset All Data** - DELETE /api/admin/reset-all-data (NEW ENDPOINT) 
+         - ✅ Working correctly with admin authentication required
+         - Comprehensive cleanup: panic_events, active_panics, civil_reports, escort_sessions, files
+         - Returns detailed deletion counts for all collections
+      
+      4. **Panic Status** - GET /api/panic/status
+         - ✅ Working correctly for civil users (testcivil@test.com registered/tested)
+         - Returns proper JSON with required is_active field: {"is_active": false}
+         - Field verification confirms is_active is present in response
+      
+      EXISTING ENDPOINTS ALSO VERIFIED:
+      - GET /api/admin/security-teams - ✅ Working (returns empty array)
+      - GET /api/admin/analytics - ✅ Working (returns 7 data categories)
+      - DELETE /api/admin/clear-uploads - ✅ Working (clears 0 records as expected)
+      
+      Backend URL: https://seccomm-app.preview.emergentagent.com/api
+      All 7/7 backend tests PASSED. New admin cleanup endpoints functioning correctly.
+      All APIs return proper status codes (200 OK) and expected JSON responses.

@@ -1,302 +1,278 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator, Alert, TextInput, RefreshControl, Platform } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, FlatList, Platform, Image, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import Constants from 'expo-constants';
 import { getAuthToken, clearAuthData } from '../../utils/auth';
 import { LocationMapModal } from '../../components/LocationMapModal';
 
-const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL;
+const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL || 'https://ongoing-dev-22.preview.emergentagent.com';
+
+interface LocationEntry {
+  latitude: number;
+  longitude: number;
+  timestamp: string;
+  accuracy?: number;
+  source?: string;
+}
 
 export default function AdminTrackUser() {
   const router = useRouter();
-  const [users, setUsers] = useState<any[]>([]);
-  const [filteredUsers, setFilteredUsers] = useState<any[]>([]);
+  const params = useLocalSearchParams();
+  const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [trackData, setTrackData] = useState<any>(null);
+  const [locationHistory, setLocationHistory] = useState<LocationEntry[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [roleFilter, setRoleFilter] = useState<'all' | 'civil' | 'security'>('all');
-  const [selectedUser, setSelectedUser] = useState<any>(null);
-  const [trackingData, setTrackingData] = useState<any>(null);
-  const [trackingLoading, setTrackingLoading] = useState(false);
-  const [locationModal, setLocationModal] = useState<{ visible: boolean; lat: number; lng: number; title: string; subtitle?: string } | null>(null);
+  const [countdown, setCountdown] = useState(30);
+  const [mapModal, setMapModal] = useState<{ lat: number; lng: number; title: string } | null>(null);
+  const intervalRef = useRef<any>(null);
+  const countdownRef = useRef<any>(null);
+  const userIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    loadUsers();
+    let uid: string | null = null;
+    if (params.userData) {
+      try {
+        const parsed = JSON.parse(params.userData as string);
+        uid = parsed.user_id || parsed.id || null;
+        setUserId(uid);
+        userIdRef.current = uid;
+      } catch (e) {
+        console.error('[AdminTrackUser] Failed to parse user data:', e);
+      }
+    } else if (params.userId) {
+      uid = params.userId as string;
+      setUserId(uid);
+      userIdRef.current = uid;
+    }
+
+    if (uid) loadTrackData(uid);
+    else setLoading(false);
+
+    // Auto-refresh every 30 seconds
+    intervalRef.current = setInterval(() => {
+      if (userIdRef.current) loadTrackData(userIdRef.current);
+      setCountdown(30);
+    }, 30000);
+
+    // Countdown ticker
+    countdownRef.current = setInterval(() => {
+      setCountdown(prev => (prev <= 1 ? 30 : prev - 1));
+    }, 1000);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+    };
   }, []);
 
-  useEffect(() => {
-    filterUsers();
-  }, [searchQuery, roleFilter, users]);
-
-  const loadUsers = async () => {
-    try {
-      const token = await getAuthToken();
-      if (!token) {
-        router.replace('/admin/login');
-        return;
-      }
-
-      const response = await axios.get(`${BACKEND_URL}/api/admin/users`, {
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 15000
-      });
-      
-      setUsers(response.data || []);
-    } catch (error: any) {
-      console.error('[AdminTrackUser] Error:', error);
-      if (error?.response?.status === 401 || error?.response?.status === 403) {
-        await clearAuthData();
-        router.replace('/admin/login');
-      }
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
-
-  const filterUsers = () => {
-    let filtered = users;
-    
-    if (roleFilter !== 'all') {
-      filtered = filtered.filter(u => u.role === roleFilter);
-    }
-    
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(u => 
-        u.full_name?.toLowerCase().includes(query) ||
-        u.email?.toLowerCase().includes(query) ||
-        u.phone?.includes(query)
-      );
-    }
-    
-    setFilteredUsers(filtered);
-  };
-
-  const trackUser = async (user: any) => {
-    setSelectedUser(user);
-    setTrackingLoading(true);
-    
-    try {
-      const token = await getAuthToken();
-      if (!token) return;
-
-      const response = await axios.get(`${BACKEND_URL}/api/admin/track-user/${user._id || user.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 15000
-      });
-      
-      setTrackingData(response.data);
-    } catch (error: any) {
-      console.error('[AdminTrackUser] Track error:', error);
-      Alert.alert('Error', 'Failed to get user tracking data');
-      setTrackingData(null);
-    } finally {
-      setTrackingLoading(false);
-    }
-  };
-
-  const onRefresh = () => {
+  const loadTrackData = async (uid: string) => {
+    if (!uid) return;
     setRefreshing(true);
-    loadUsers();
+    try {
+      const token = await getAuthToken();
+      if (!token) { router.replace('/admin/login'); return; }
+      // Use admin endpoint for tracking
+      const response = await axios.get(
+        `${BACKEND_URL}/api/admin/track-user/${uid}`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      );
+      setTrackData(response.data);
+      if (response.data.location_history && response.data.location_history.length > 0) {
+        setLocationHistory(prev => {
+          const existingTimestamps = new Set(prev.map((l: LocationEntry) => l.timestamp));
+          const newEntries = (response.data.location_history as LocationEntry[]).filter(
+            l => !existingTimestamps.has(l.timestamp)
+          );
+          if (newEntries.length === 0) return prev;
+          const merged = [...prev, ...newEntries];
+          merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          return merged;
+        });
+      }
+    } catch (error: any) {
+      console.error('[AdminTrackUser] Failed to load:', error?.response?.status);
+      if (error?.response?.status === 401) { await clearAuthData(); router.replace('/admin/login'); }
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
+    }
   };
 
-  const formatDate = (dateStr: string) => {
-    if (!dateStr) return 'Never';
-    return new Date(dateStr).toLocaleString();
+  const handleRefresh = () => {
+    if (userIdRef.current) { setCountdown(30); loadTrackData(userIdRef.current); }
   };
 
-  const renderUser = ({ item }: any) => {
-    const isSelected = selectedUser?._id === item._id || selectedUser?.id === item.id;
-    
+  const callUser = () => {
+    const phone = trackData?.phone;
+    if (phone) Linking.openURL(`tel:${phone}`);
+    else Alert.alert('No Phone', 'Phone number not available');
+  };
+
+  const formatTime = (iso: string) => {
+    try {
+      return new Date(iso).toLocaleString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        month: 'short', day: 'numeric',
+      });
+    } catch { return iso; }
+  };
+
+  const renderLocationEntry = ({ item, index }: { item: LocationEntry; index: number }) => (
+    <TouchableOpacity
+      style={[styles.locationEntry, index === 0 && styles.latestEntry]}
+      onPress={() => setMapModal({ lat: item.latitude, lng: item.longitude, title: `${trackData?.full_name || 'User'} @ ${formatTime(item.timestamp)}` })}
+      activeOpacity={0.7}
+    >
+      <View style={styles.entryLeft}>
+        <View style={[styles.locationDot, index === 0 && styles.latestDot]} />
+        {index < locationHistory.length - 1 && <View style={styles.locationLine} />}
+      </View>
+      <View style={styles.entryContent}>
+        <View style={styles.entryTopRow}>
+          {index === 0 && <View style={styles.latestBadge}><Text style={styles.latestBadgeText}>LATEST</Text></View>}
+          <Text style={styles.coordsText}>{item.latitude.toFixed(6)}, {item.longitude.toFixed(6)}</Text>
+        </View>
+        <Text style={styles.timeText}>{formatTime(item.timestamp)}</Text>
+        {item.accuracy != null && <Text style={styles.accuracyText}>±{Math.round(item.accuracy)}m accuracy</Text>}
+      </View>
+      <Ionicons name="map-outline" size={18} color="#3B82F6" style={{ marginLeft: 8 }} />
+    </TouchableOpacity>
+  );
+
+  if (loading) {
     return (
-      <TouchableOpacity 
-        style={[styles.userCard, isSelected && styles.userCardSelected]}
-        onPress={() => trackUser(item)}
-      >
-        <View style={[styles.avatar, { backgroundColor: item.role === 'security' ? '#F59E0B20' : '#10B98120' }]}>
-          <Ionicons 
-            name={item.role === 'security' ? 'shield' : 'person'} 
-            size={24} 
-            color={item.role === 'security' ? '#F59E0B' : '#10B981'} 
-          />
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}><Ionicons name="arrow-back" size={24} color="#fff" /></TouchableOpacity>
+          <Text style={styles.title}>Track User</Text>
+          <View style={{ width: 24 }} />
         </View>
-        <View style={styles.userInfo}>
-          <Text style={styles.userName}>{item.full_name || 'Unknown'}</Text>
-          <Text style={styles.userEmail}>{item.email}</Text>
-          <View style={styles.userMeta}>
-            <View style={[styles.roleBadge, { backgroundColor: item.role === 'security' ? '#F59E0B20' : '#10B98120' }]}>
-              <Text style={[styles.roleText, { color: item.role === 'security' ? '#F59E0B' : '#10B981' }]}>
-                {item.role?.toUpperCase()}
-              </Text>
-            </View>
-            {item.phone && (
-              <Text style={styles.userPhone}>{item.phone}</Text>
-            )}
-          </View>
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color="#8B5CF6" />
+          <Text style={styles.loadingText}>Loading user data...</Text>
         </View>
-        <Ionicons name="chevron-forward" size={20} color="#64748B" />
-      </TouchableOpacity>
+      </SafeAreaView>
     );
-  };
+  }
+
+  const statusLabel = trackData?.has_panic ? '🚨 PANIC' : trackData?.has_escort ? '🛡 ESCORT' : trackData?.is_active ? '📡 ACTIVE' : '⚫ OFFLINE';
+  const statusColor = trackData?.has_panic ? '#EF4444' : trackData?.has_escort ? '#3B82F6' : trackData?.is_active ? '#10B981' : '#64748B';
+  
+  // Role badge
+  const roleLabel = trackData?.role === 'security' ? '🛡 Security' : trackData?.role === 'admin' ? '👤 Admin' : '🙋 Civilian';
+  const roleColor = trackData?.role === 'security' ? '#3B82F6' : trackData?.role === 'admin' ? '#8B5CF6' : '#F59E0B';
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={24} color="#fff" />
-        </TouchableOpacity>
-        <Text style={styles.title}>Track Users</Text>
-        <View style={{ width: 24 }} />
-      </View>
-
-      {/* Search & Filter */}
-      <View style={styles.searchContainer}>
-        <View style={styles.searchBox}>
-          <Ionicons name="search" size={20} color="#64748B" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search users..."
-            placeholderTextColor="#64748B"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-        </View>
-        
-        <View style={styles.filterRow}>
-          {(['all', 'civil', 'security'] as const).map((role) => (
-            <TouchableOpacity
-              key={role}
-              style={[styles.filterChip, roleFilter === role && styles.filterChipActive]}
-              onPress={() => setRoleFilter(role)}
-            >
-              <Text style={[styles.filterText, roleFilter === role && styles.filterTextActive]}>
-                {role.charAt(0).toUpperCase() + role.slice(1)}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      <View style={styles.content}>
-        {/* User List */}
-        <View style={styles.userListContainer}>
-          {loading ? (
-            <ActivityIndicator size="large" color="#8B5CF6" style={{ marginTop: 40 }} />
-          ) : (
-            <FlatList
-              data={filteredUsers}
-              renderItem={renderUser}
-              keyExtractor={(item) => item._id || item.id}
-              contentContainerStyle={styles.userList}
-              refreshControl={
-                <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#8B5CF6" />
-              }
-              ListEmptyComponent={
-                <View style={styles.emptyState}>
-                  <Ionicons name="people-outline" size={48} color="#64748B" />
-                  <Text style={styles.emptyText}>No users found</Text>
-                </View>
-              }
-            />
+        <TouchableOpacity onPress={() => router.back()}><Ionicons name="arrow-back" size={24} color="#fff" /></TouchableOpacity>
+        <Text style={styles.title}>Track User</Text>
+        <TouchableOpacity onPress={handleRefresh}>
+          {refreshing ? <ActivityIndicator size="small" color="#8B5CF6" /> : (
+            <View style={{ alignItems: 'center' }}>
+              <Ionicons name="refresh" size={22} color="#8B5CF6" />
+              <Text style={{ color: '#8B5CF6', fontSize: 10 }}>{countdown}s</Text>
+            </View>
           )}
-        </View>
+        </TouchableOpacity>
+      </View>
 
-        {/* Tracking Panel */}
-        {selectedUser && (
-          <View style={styles.trackingPanel}>
-            <View style={styles.trackingHeader}>
-              <Text style={styles.trackingTitle}>Tracking: {selectedUser.full_name}</Text>
-              <TouchableOpacity onPress={() => setSelectedUser(null)}>
-                <Ionicons name="close" size={24} color="#94A3B8" />
+      <FlatList
+        data={locationHistory}
+        keyExtractor={(_, i) => i.toString()}
+        renderItem={renderLocationEntry}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 60 }}
+        ListHeaderComponent={
+          <View>
+            {/* User Info */}
+            <View style={styles.userCard}>
+              <View style={styles.avatarWrap}>
+                {trackData?.profile_photo_url
+                  ? <Image source={{ uri: trackData.profile_photo_url }} style={styles.avatarImage} />
+                  : <View style={styles.avatarPlaceholder}><Ionicons name="person" size={36} color="#8B5CF6" /></View>
+                }
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.userName}>{trackData?.full_name || trackData?.email || 'Unknown User'}</Text>
+                {trackData?.email && <Text style={styles.userSub}>✉️ {trackData.email}</Text>}
+                {trackData?.phone && <Text style={styles.userSub}>📞 {trackData.phone}</Text>}
+              </View>
+            </View>
+
+            {/* Role Badge */}
+            <View style={styles.roleRow}>
+              <View style={[styles.roleBadge, { backgroundColor: roleColor + '20' }]}>
+                <Text style={[styles.roleBadgeText, { color: roleColor }]}>{roleLabel}</Text>
+              </View>
+            </View>
+
+            {/* Status + Call */}
+            <View style={styles.statusRow}>
+              <View style={[styles.statusPill, { backgroundColor: statusColor + '20' }]}>
+                <Text style={[styles.statusPillText, { color: statusColor }]}>{statusLabel}</Text>
+              </View>
+              <TouchableOpacity style={styles.callBtn} onPress={callUser}>
+                <Ionicons name="call" size={16} color="#fff" />
+                <Text style={styles.callBtnText}>Call User</Text>
               </TouchableOpacity>
             </View>
 
-            {trackingLoading ? (
-              <ActivityIndicator size="large" color="#8B5CF6" style={{ marginTop: 20 }} />
-            ) : trackingData ? (
-              <View style={styles.trackingContent}>
-                {/* Last Known Location */}
-                {trackingData.last_location && (
-                  <TouchableOpacity 
-                    style={styles.locationCard}
-                    onPress={() => setLocationModal({
-                      visible: true,
-                      lat: trackingData.last_location.latitude,
-                      lng: trackingData.last_location.longitude,
-                      title: `${selectedUser.full_name}'s Location`,
-                      subtitle: `Last updated: ${formatDate(trackingData.last_location.timestamp)}`
-                    })}
-                  >
-                    <View style={styles.locationIcon}>
-                      <Ionicons name="location" size={24} color="#3B82F6" />
-                    </View>
-                    <View style={styles.locationInfo}>
-                      <Text style={styles.locationLabel}>Last Known Location</Text>
-                      <Text style={styles.locationCoords}>
-                        {trackingData.last_location.latitude.toFixed(4)}, {trackingData.last_location.longitude.toFixed(4)}
-                      </Text>
-                      <Text style={styles.locationTime}>
-                        {formatDate(trackingData.last_location.timestamp)}
-                      </Text>
-                    </View>
-                    <Ionicons name="map" size={20} color="#3B82F6" />
-                  </TouchableOpacity>
-                )}
-
-                {/* Activity Summary */}
-                <View style={styles.statsRow}>
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{trackingData.total_reports || 0}</Text>
-                    <Text style={styles.statLabel}>Reports</Text>
-                  </View>
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{trackingData.total_panics || 0}</Text>
-                    <Text style={styles.statLabel}>Panics</Text>
-                  </View>
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{trackingData.active_days || 0}</Text>
-                    <Text style={styles.statLabel}>Active Days</Text>
-                  </View>
+            {/* Current location */}
+            {trackData?.latitude && trackData?.longitude ? (
+              <TouchableOpacity
+                style={styles.currentLocCard}
+                onPress={() => setMapModal({ lat: trackData.latitude, lng: trackData.longitude, title: `${trackData.full_name || 'User'} - Current` })}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <Ionicons name="location" size={20} color="#10B981" />
+                  <Text style={{ color: '#fff', fontWeight: '600', flex: 1 }}>Current Location</Text>
+                  <Ionicons name="open-outline" size={16} color="#3B82F6" />
                 </View>
-
-                {/* Recent Activity */}
-                <Text style={styles.sectionLabel}>Recent Activity</Text>
-                {trackingData.recent_activity?.length > 0 ? (
-                  trackingData.recent_activity.map((activity: any, index: number) => (
-                    <View key={index} style={styles.activityItem}>
-                      <Ionicons 
-                        name={activity.type === 'panic' ? 'alert-circle' : 'document-text'} 
-                        size={16} 
-                        color={activity.type === 'panic' ? '#EF4444' : '#3B82F6'} 
-                      />
-                      <Text style={styles.activityText}>{activity.description}</Text>
-                      <Text style={styles.activityTime}>{formatDate(activity.timestamp)}</Text>
-                    </View>
-                  ))
-                ) : (
-                  <Text style={styles.noActivityText}>No recent activity</Text>
-                )}
-              </View>
+                <Text style={styles.mainCoords}>{trackData.latitude.toFixed(6)}, {trackData.longitude.toFixed(6)}</Text>
+                {trackData.last_update && <Text style={styles.updateTime}>Updated: {formatTime(trackData.last_update)}</Text>}
+              </TouchableOpacity>
             ) : (
-              <Text style={styles.noTrackingText}>No tracking data available</Text>
+              <View style={styles.noLocCard}>
+                <Ionicons name="location-outline" size={28} color="#64748B" />
+                <Text style={{ color: '#64748B', marginTop: 8, fontSize: 14 }}>No location data available</Text>
+              </View>
             )}
+
+            {/* History section title */}
+            <View style={styles.historyHeader}>
+              <Ionicons name="trail-sign-outline" size={16} color="#94A3B8" />
+              <Text style={styles.historyTitle}>Location History — {locationHistory.length} recorded point{locationHistory.length !== 1 ? 's' : ''}</Text>
+            </View>
           </View>
-        )}
+        }
+        ListEmptyComponent={
+          <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+            <Ionicons name="time-outline" size={44} color="#334155" />
+            <Text style={{ color: '#475569', fontSize: 14, marginTop: 12 }}>No location history yet</Text>
+            <Text style={{ color: '#334155', fontSize: 12, marginTop: 4 }}>Points will accumulate as the user moves</Text>
+          </View>
+        }
+      />
+
+      {/* Bottom refresh bar */}
+      <View style={styles.refreshBar}>
+        <View style={[styles.refreshFill, { width: `${(countdown / 30) * 100}%` as any }]} />
+        <Ionicons name="sync-outline" size={12} color="#475569" style={{ marginRight: 6 }} />
+        <Text style={styles.refreshBarText}>Auto-refreshes every 30s · Next in {countdown}s</Text>
       </View>
 
-      {/* Location Map Modal */}
-      {locationModal && (
+      {mapModal && (
         <LocationMapModal
-          visible={locationModal.visible}
-          onClose={() => setLocationModal(null)}
-          latitude={locationModal.lat}
-          longitude={locationModal.lng}
-          title={locationModal.title}
-          subtitle={locationModal.subtitle}
+          visible={true}
+          onClose={() => setMapModal(null)}
+          latitude={mapModal.lat}
+          longitude={mapModal.lng}
+          title={mapModal.title}
         />
       )}
     </SafeAreaView>
@@ -305,49 +281,44 @@ export default function AdminTrackUser() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0F172A' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#1E293B' },
   title: { fontSize: 20, fontWeight: '600', color: '#fff' },
-  searchContainer: { paddingHorizontal: 20 },
-  searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12 },
-  searchInput: { flex: 1, color: '#fff', fontSize: 16, marginLeft: 12 },
-  filterRow: { flexDirection: 'row', marginTop: 12, gap: 8 },
-  filterChip: { paddingVertical: 8, paddingHorizontal: 16, backgroundColor: '#1E293B', borderRadius: 20 },
-  filterChipActive: { backgroundColor: '#8B5CF6' },
-  filterText: { color: '#94A3B8', fontSize: 14 },
-  filterTextActive: { color: '#fff' },
-  content: { flex: 1, marginTop: 16 },
-  userListContainer: { flex: 1 },
-  userList: { paddingHorizontal: 20 },
-  userCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: 12, padding: 16, marginBottom: 12 },
-  userCardSelected: { borderWidth: 2, borderColor: '#8B5CF6' },
-  avatar: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
-  userInfo: { flex: 1, marginLeft: 12 },
-  userName: { fontSize: 16, fontWeight: '600', color: '#fff' },
-  userEmail: { fontSize: 14, color: '#94A3B8', marginTop: 2 },
-  userMeta: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 8 },
-  roleBadge: { paddingVertical: 2, paddingHorizontal: 8, borderRadius: 4 },
-  roleText: { fontSize: 11, fontWeight: '600' },
-  userPhone: { fontSize: 12, color: '#64748B' },
-  emptyState: { alignItems: 'center', paddingVertical: 40 },
-  emptyText: { color: '#64748B', marginTop: 12 },
-  trackingPanel: { backgroundColor: '#1E293B', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '50%' },
-  trackingHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  trackingTitle: { fontSize: 18, fontWeight: '600', color: '#fff' },
-  trackingContent: {},
-  locationCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0F172A', borderRadius: 12, padding: 16, marginBottom: 16 },
-  locationIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#3B82F620', justifyContent: 'center', alignItems: 'center' },
-  locationInfo: { flex: 1, marginLeft: 12 },
-  locationLabel: { color: '#94A3B8', fontSize: 12 },
-  locationCoords: { color: '#fff', fontSize: 14, fontWeight: '500', marginTop: 2 },
-  locationTime: { color: '#64748B', fontSize: 12, marginTop: 2 },
-  statsRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 16 },
-  statItem: { alignItems: 'center' },
-  statValue: { color: '#fff', fontSize: 24, fontWeight: '700' },
-  statLabel: { color: '#64748B', fontSize: 12, marginTop: 4 },
-  sectionLabel: { color: '#94A3B8', fontSize: 14, fontWeight: '500', marginBottom: 12 },
-  activityItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, gap: 8 },
-  activityText: { flex: 1, color: '#94A3B8', fontSize: 14 },
-  activityTime: { color: '#64748B', fontSize: 12 },
-  noActivityText: { color: '#64748B', fontSize: 14, textAlign: 'center', paddingVertical: 20 },
-  noTrackingText: { color: '#64748B', fontSize: 14, textAlign: 'center', paddingVertical: 40 },
+  centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loadingText: { color: '#94A3B8', marginTop: 12 },
+  userCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: 16, padding: 16, marginBottom: 12 },
+  avatarWrap: { marginRight: 14 },
+  avatarPlaceholder: { width: 62, height: 62, borderRadius: 31, backgroundColor: '#8B5CF61A', justifyContent: 'center', alignItems: 'center' },
+  avatarImage: { width: 62, height: 62, borderRadius: 31 },
+  userName: { fontSize: 18, fontWeight: '700', color: '#fff' },
+  userSub: { fontSize: 13, color: '#94A3B8', marginTop: 3 },
+  roleRow: { marginBottom: 12 },
+  roleBadge: { alignSelf: 'flex-start', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16 },
+  roleBadgeText: { fontSize: 13, fontWeight: '600' },
+  statusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  statusPill: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20 },
+  statusPillText: { fontSize: 13, fontWeight: '700' },
+  callBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#10B981', paddingHorizontal: 16, paddingVertical: 9, borderRadius: 20 },
+  callBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  currentLocCard: { backgroundColor: '#1E293B', borderRadius: 14, padding: 16, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: '#10B981' },
+  mainCoords: { fontSize: 15, color: '#10B981', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', marginBottom: 4 },
+  updateTime: { fontSize: 12, color: '#64748B' },
+  noLocCard: { backgroundColor: '#1E293B', borderRadius: 14, padding: 20, alignItems: 'center', marginBottom: 12 },
+  historyHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#1E293B', marginBottom: 4 },
+  historyTitle: { fontSize: 13, fontWeight: '600', color: '#94A3B8' },
+  locationEntry: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#1E293B20', paddingHorizontal: 4 },
+  latestEntry: { backgroundColor: '#3B82F60A', borderRadius: 10, paddingHorizontal: 10 },
+  entryLeft: { width: 22, alignItems: 'center', marginRight: 12, paddingTop: 2 },
+  locationDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#334155' },
+  latestDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#10B981' },
+  locationLine: { width: 2, height: 30, backgroundColor: '#1E293B', marginTop: 3 },
+  entryContent: { flex: 1 },
+  entryTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  latestBadge: { backgroundColor: '#10B98130', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  latestBadgeText: { color: '#10B981', fontSize: 10, fontWeight: '700' },
+  coordsText: { fontSize: 13, color: '#E2E8F0', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  timeText: { fontSize: 12, color: '#64748B', marginTop: 3 },
+  accuracyText: { fontSize: 11, color: '#475569', marginTop: 1 },
+  refreshBar: { height: 30, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' },
+  refreshFill: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#8B5CF610' },
+  refreshBarText: { fontSize: 11, color: '#475569' },
 });

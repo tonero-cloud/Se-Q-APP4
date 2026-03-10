@@ -56,15 +56,50 @@ export default function PanicActive() {
 
   const checkActivePanic = async () => {
     try {
+      // First check backend for authoritative panic status
+      const token = await getAuthToken();
+      if (token) {
+        try {
+          const response = await axios.get(`${BACKEND_URL}/api/panic/status`, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: 8000
+          });
+          
+          if (response.data?.is_active) {
+            // Sync local storage with backend
+            const panicData = {
+              id: response.data.panic_id,
+              panic_id: response.data.panic_id,
+              category: response.data.emergency_category || 'other',
+              activated_at: response.data.activated_at
+            };
+            await AsyncStorage.setItem('active_panic', JSON.stringify(panicData));
+            
+            setPanicId(response.data.panic_id);
+            setSelectedCategory(response.data.emergency_category || 'other');
+            setIsTracking(true);
+            setShowSafeButton(true);
+            setShowCategoryModal(false);
+            startLocationTracking(token);
+            return;
+          } else {
+            // Backend says no active panic - clear local storage
+            await AsyncStorage.removeItem('active_panic');
+          }
+        } catch (err) {
+          console.log('[PanicActive] Backend check failed, falling back to local storage');
+        }
+      }
+      
+      // Fallback to local storage
       const activePanic = await AsyncStorage.getItem('active_panic');
       if (activePanic) {
         const panicData = JSON.parse(activePanic);
-        setPanicId(panicData.id);
+        setPanicId(panicData.id || panicData.panic_id);
         setSelectedCategory(panicData.category);
         setIsTracking(true);
         setShowSafeButton(true);
         setShowCategoryModal(false);
-        const token = await getAuthToken();
         if (token) startLocationTracking(token);
       }
     } catch {}
@@ -114,7 +149,7 @@ export default function PanicActive() {
       setIsTracking(true);
 
       await AsyncStorage.setItem('active_panic', JSON.stringify({
-        id: newPanicId, category, activated_at: new Date().toISOString()
+        id: newPanicId, panic_id: newPanicId, category, activated_at: new Date().toISOString()
       }));
       await AsyncStorage.setItem('auth_token', token);
 

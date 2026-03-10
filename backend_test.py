@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Base URL from frontend .env
-BASE_URL = "https://escort-track-app.preview.emergentagent.com/api"
+BASE_URL = "https://seccomm-app.preview.emergentagent.com/api"
 
 # Test credentials
 ADMIN_EMAIL = "anthonyezedinachi@gmail.com"
@@ -242,6 +242,97 @@ class SafeGuardAPITester:
             logger.error(f"❌ Audit log failed: {result['data']}")
             return False
 
+    async def test_admin_clear_panics(self):
+        """Test DELETE /api/admin/clear-panics - NEW PRIORITY ENDPOINT"""
+        logger.info("=== Testing Admin Clear Panics ===")
+        
+        if not self.admin_token:
+            logger.error("❌ No admin token available")
+            return False
+            
+        result = await self.make_request(
+            "DELETE", 
+            "/admin/clear-panics", 
+            headers=self.get_auth_headers()
+        )
+        
+        if result["success"]:
+            data = result["data"]
+            logger.info(f"✅ Clear panics successful")
+            logger.info(f"   Message: {data.get('message')}")
+            logger.info(f"   Deleted panic events: {data.get('deleted_panic_events')}")
+            logger.info(f"   Deleted active panics: {data.get('deleted_active_panics')}")
+            return True
+        else:
+            logger.error(f"❌ Clear panics failed: {result['data']}")
+            return False
+
+    async def test_admin_reset_all_data(self):
+        """Test DELETE /api/admin/reset-all-data - NEW PRIORITY ENDPOINT"""
+        logger.info("=== Testing Admin Reset All Data ===")
+        
+        if not self.admin_token:
+            logger.error("❌ No admin token available")
+            return False
+            
+        result = await self.make_request(
+            "DELETE", 
+            "/admin/reset-all-data", 
+            headers=self.get_auth_headers()
+        )
+        
+        if result["success"]:
+            data = result["data"]
+            logger.info(f"✅ Reset all data successful")
+            logger.info(f"   Message: {data.get('message')}")
+            logger.info(f"   Panic events deleted: {data.get('panic_events')}")
+            logger.info(f"   Active panics deleted: {data.get('active_panics')}")
+            logger.info(f"   Civil reports deleted: {data.get('civil_reports')}")
+            logger.info(f"   Escort sessions deleted: {data.get('escort_sessions')}")
+            logger.info(f"   Files deleted: {data.get('files_deleted')}")
+            return True
+        else:
+            logger.error(f"❌ Reset all data failed: {result['data']}")
+            return False
+
+    async def test_panic_status(self):
+        """Test GET /api/panic/status - NEW PRIORITY ENDPOINT"""
+        logger.info("=== Testing Panic Status ===")
+        
+        # Need to login as civil user first
+        civil_token = await self.login_test_user(TEST_CIVIL_EMAIL, TEST_CIVIL_PASSWORD)
+        if not civil_token:
+            logger.error("❌ Could not login civil user for panic status test")
+            return False
+        
+        headers = {"Authorization": f"Bearer {civil_token}"}
+        result = await self.make_request(
+            "GET", 
+            "/panic/status", 
+            headers=headers
+        )
+        
+        if result["success"]:
+            data = result["data"]
+            logger.info(f"✅ Panic status retrieved successfully")
+            logger.info(f"   Is active: {data.get('is_active')}")
+            
+            # Verify is_active field exists
+            if 'is_active' in data:
+                logger.info("   ✅ is_active field present in response")
+            else:
+                logger.error("   ❌ is_active field missing from response")
+                return False
+                
+            if data.get('is_active'):
+                logger.info(f"   Panic ID: {data.get('panic_id')}")
+                logger.info(f"   Activated at: {data.get('activated_at')}")
+                logger.info(f"   Emergency category: {data.get('emergency_category')}")
+            return True
+        else:
+            logger.error(f"❌ Panic status failed: {result['data']}")
+            return False
+
     async def register_test_user(self, email, password, role, full_name, phone):
         """Register a test user"""
         payload = {
@@ -412,32 +503,30 @@ class SafeGuardAPITester:
         
         test_results = {}
         
+        # PRIORITY TESTS (from review request)
         # Test 1: Admin Login 
         test_results["admin_login"] = await self.test_admin_login()
         
         if not test_results["admin_login"]:
             logger.error("🛑 Admin login failed - stopping admin tests")
         else:
-            # Test 2: Admin Clear Uploads
+            # Test 2: Admin Clear Panics (PRIORITY)
+            test_results["clear_panics"] = await self.test_admin_clear_panics()
+            
+            # Test 3: Admin Reset All Data (PRIORITY)
+            test_results["reset_all_data"] = await self.test_admin_reset_all_data()
+            
+            # Test 4: Admin Clear Uploads (existing endpoint)
             test_results["clear_uploads"] = await self.test_admin_clear_uploads()
             
-            # Test 3: Admin Security Teams
+            # Test 5: Admin Security Teams (existing endpoint)
             test_results["security_teams"] = await self.test_admin_security_teams()
             
-            # Test 4: Admin Analytics
+            # Test 6: Admin Analytics (existing endpoint)
             test_results["analytics"] = await self.test_admin_analytics()
-            
-            # Test 5: Admin Broadcast
-            test_results["broadcast"] = await self.test_admin_broadcast()
-            
-            # Test 6: Admin Audit Log
-            test_results["audit_log"] = await self.test_admin_audit_log()
         
-        # Test 7: Profile Photo Base64 Upload (NEW endpoint)
-        test_results["profile_photo_base64"] = await self.test_profile_photo_base64_upload()
-        
-        # Test 8: Nearby Panics API
-        test_results["nearby_panics_api"] = await self.test_nearby_panics_api()
+        # Test 7: Panic Status (PRIORITY - verify is_active field)
+        test_results["panic_status"] = await self.test_panic_status()
         
         # Summary
         logger.info("="*60)

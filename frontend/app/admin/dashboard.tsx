@@ -111,6 +111,50 @@ export default function AdminDashboard() {
     ]);
   };
 
+  const handleClearPanics = async () => {
+    showAlert('Clear All Panics', 'This will permanently delete ALL panic events (both active and resolved). This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete All',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const token = await getAuthToken();
+            const res = await axios.delete(`${BACKEND_URL}/api/admin/clear-panics`, {
+              headers: { Authorization: `Bearer ${token}` }, timeout: 30000
+            });
+            showAlert('✅ Cleared', res.data?.message || 'All panics cleared.', [{ text: 'OK' }]);
+            loadData();
+          } catch (error: any) {
+            showAlert('Error', error?.response?.data?.detail || 'Failed to clear panics.', [{ text: 'OK' }]);
+          }
+        }
+      }
+    ]);
+  };
+
+  const handleResetAllData = async () => {
+    showAlert('⚠️ Reset ALL Data', 'This will permanently delete ALL panics, reports, escorts, and uploads. This is a complete data wipe and CANNOT be undone!', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'RESET ALL',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const token = await getAuthToken();
+            const res = await axios.delete(`${BACKEND_URL}/api/admin/reset-all-data`, {
+              headers: { Authorization: `Bearer ${token}` }, timeout: 60000
+            });
+            showAlert('✅ Reset Complete', res.data?.message || 'All data has been cleared.', [{ text: 'OK' }]);
+            loadData();
+          } catch (error: any) {
+            showAlert('Error', error?.response?.data?.detail || 'Failed to reset data.', [{ text: 'OK' }]);
+          }
+        }
+      }
+    ]);
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -274,6 +318,22 @@ export default function AdminDashboard() {
               <Ionicons name="trash" size={26} color="#EF4444" />
             </View>
             <Text style={[styles.actionText, { color: '#EF4444' }]}>Clear All Uploads</Text>
+          </TouchableOpacity>
+
+          {/* Clear Panics — Danger Zone */}
+          <TouchableOpacity style={styles.dangerCard} onPress={handleClearPanics}>
+            <View style={[styles.actionIcon, { backgroundColor: '#F9731620' }]}>
+              <Ionicons name="alert-circle" size={26} color="#F97316" />
+            </View>
+            <Text style={[styles.actionText, { color: '#F97316' }]}>Clear All Panics</Text>
+          </TouchableOpacity>
+
+          {/* Reset All Data — Super Danger Zone */}
+          <TouchableOpacity style={[styles.dangerCard, { borderColor: '#DC262640' }]} onPress={handleResetAllData}>
+            <View style={[styles.actionIcon, { backgroundColor: '#DC262620' }]}>
+              <Ionicons name="nuclear" size={26} color="#DC2626" />
+            </View>
+            <Text style={[styles.actionText, { color: '#DC2626' }]}>Reset ALL Data</Text>
           </TouchableOpacity>
         </View>
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator, Alert, Linking, Platform, Modal } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator, Alert, Linking, Platform, Modal, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from 'expo-router';
@@ -22,12 +22,20 @@ const EMERGENCY_CATEGORIES: Record<string, { label: string; icon: string; color:
   other: { label: 'Other Emergency', icon: 'help-circle', color: '#64748B' },
 };
 
+interface LocationEntry {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+  timestamp: string;
+}
+
 export default function SecurityPanics() {
   const router = useRouter();
   const [panics, setPanics] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [locationModal, setLocationModal] = useState<{visible: boolean; lat: number; lng: number; title: string} | null>(null);
   const [respondModal, setRespondModal] = useState<any>(null);
+  const [locationHistoryModal, setLocationHistoryModal] = useState<{visible: boolean; panic: any} | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -101,6 +109,15 @@ export default function SecurityPanics() {
     };
   };
 
+  const formatTime = (timestamp: string) => {
+    try {
+      return new Date(timestamp).toLocaleString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        month: 'short', day: 'numeric',
+      });
+    } catch { return timestamp; }
+  };
+
   const getCategoryInfo = (category: string) => {
     return EMERGENCY_CATEGORIES[category] || EMERGENCY_CATEGORIES.other;
   };
@@ -121,11 +138,39 @@ export default function SecurityPanics() {
     setRespondModal(item);
   };
 
+  const renderLocationEntry = (loc: LocationEntry, index: number, total: number) => (
+    <TouchableOpacity
+      key={index}
+      style={[styles.locationEntry, index === 0 && styles.latestEntry]}
+      onPress={() => setLocationModal({ 
+        visible: true, 
+        lat: loc.latitude, 
+        lng: loc.longitude, 
+        title: `Location @ ${formatTime(loc.timestamp)}` 
+      })}
+      activeOpacity={0.7}
+    >
+      <View style={styles.entryLeft}>
+        <View style={[styles.locationDot, index === 0 && styles.latestDot]} />
+        {index < total - 1 && <View style={styles.locationLine} />}
+      </View>
+      <View style={styles.entryContent}>
+        <View style={styles.entryTopRow}>
+          {index === 0 && <View style={styles.latestBadge}><Text style={styles.latestBadgeText}>LATEST</Text></View>}
+          <Text style={styles.coordsText}>{loc.latitude.toFixed(6)}, {loc.longitude.toFixed(6)}</Text>
+        </View>
+        <Text style={styles.timeText}>{formatTime(loc.timestamp)}</Text>
+        {loc.accuracy != null && <Text style={styles.accuracyText}>±{Math.round(loc.accuracy)}m accuracy</Text>}
+      </View>
+      <Ionicons name="map-outline" size={18} color="#3B82F6" style={{ marginLeft: 8 }} />
+    </TouchableOpacity>
+  );
+
   const renderPanic = ({ item }: any) => {
     const categoryInfo = getCategoryInfo(item.emergency_category);
     const dateTime = formatDateTime(item.activated_at);
     const senderName = getSenderName(item);
-    const senderPhone = item.user_phone || item.phone;
+    const locationHistory = item.location_history || [];
 
     return (
       <View style={styles.panicCard}>
@@ -148,9 +193,7 @@ export default function SecurityPanics() {
             <Ionicons name="person-circle" size={44} color="#3B82F6" />
           </View>
           <View style={styles.panicInfo}>
-            <Text style={styles.panicName}>
-              {getSenderName(item)}
-            </Text>
+            <Text style={styles.panicName}>{getSenderName(item)}</Text>
             <Text style={styles.panicEmail}>{item.user_email || 'No email'}</Text>
             {(item.user_phone || item.phone) ? (
               <Text style={styles.panicPhone}>{item.user_phone || item.phone}</Text>
@@ -182,6 +225,26 @@ export default function SecurityPanics() {
             </Text>
           </View>
         </View>
+
+        {/* GPS Location History Section - Like Security Escort */}
+        {locationHistory.length > 0 && (
+          <TouchableOpacity 
+            style={styles.gpsHistoryCard}
+            onPress={() => setLocationHistoryModal({ visible: true, panic: item })}
+          >
+            <View style={styles.gpsHistoryHeader}>
+              <Ionicons name="trail-sign" size={18} color="#F59E0B" />
+              <Text style={styles.gpsHistoryTitle}>GPS Track History</Text>
+              <View style={styles.gpsCountBadge}>
+                <Text style={styles.gpsCountText}>{locationHistory.length}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#64748B" />
+            </View>
+            <Text style={styles.gpsHistorySubtext}>
+              Tap to view all recorded GPS coordinates
+            </Text>
+          </TouchableOpacity>
+        )}
 
         <View style={styles.panicActions}>
           <TouchableOpacity 
@@ -280,6 +343,51 @@ export default function SecurityPanics() {
           </TouchableOpacity>
         </Modal>
       )}
+
+      {/* Location History Modal - Like Security Escort */}
+      {locationHistoryModal && (
+        <Modal visible={true} transparent animationType="slide" onRequestClose={() => setLocationHistoryModal(null)}>
+          <View style={styles.historyModalContainer}>
+            <SafeAreaView style={styles.historyModalInner}>
+              <View style={styles.historyModalHeader}>
+                <TouchableOpacity onPress={() => setLocationHistoryModal(null)}>
+                  <Ionicons name="close" size={28} color="#fff" />
+                </TouchableOpacity>
+                <Text style={styles.historyModalTitle}>GPS Location History</Text>
+                <View style={{ width: 28 }} />
+              </View>
+              
+              <View style={styles.historyUserCard}>
+                <Ionicons name="person-circle" size={40} color="#EF4444" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.historyUserName}>{getSenderName(locationHistoryModal.panic)}</Text>
+                  <Text style={styles.historyUserSub}>
+                    {locationHistoryModal.panic.location_history?.length || 0} recorded points
+                  </Text>
+                </View>
+                <View style={[styles.categoryBadge, { backgroundColor: `${getCategoryInfo(locationHistoryModal.panic.emergency_category).color}20` }]}>
+                  <Text style={[styles.categoryText, { color: getCategoryInfo(locationHistoryModal.panic.emergency_category).color }]}>
+                    {getCategoryInfo(locationHistoryModal.panic.emergency_category).label}
+                  </Text>
+                </View>
+              </View>
+
+              <ScrollView style={styles.historyList} showsVerticalScrollIndicator={false}>
+                {(locationHistoryModal.panic.location_history || []).map((loc: LocationEntry, index: number) => 
+                  renderLocationEntry(loc, index, locationHistoryModal.panic.location_history?.length || 0)
+                )}
+                {(!locationHistoryModal.panic.location_history || locationHistoryModal.panic.location_history.length === 0) && (
+                  <View style={styles.noHistoryContainer}>
+                    <Ionicons name="time-outline" size={44} color="#334155" />
+                    <Text style={styles.noHistoryText}>No location history yet</Text>
+                    <Text style={styles.noHistorySubtext}>GPS coordinates will appear as they are recorded</Text>
+                  </View>
+                )}
+              </ScrollView>
+            </SafeAreaView>
+          </View>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }
@@ -300,7 +408,6 @@ const styles = StyleSheet.create({
   panicHeader: { flexDirection: 'row', alignItems: 'flex-start' },
   panicIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#3B82F620', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
   panicInfo: { flex: 1 },
-  panicTitle: { fontSize: 16, fontWeight: 'bold', color: '#EF4444', marginBottom: 4 },
   panicName: { fontSize: 17, fontWeight: '700', color: '#fff', marginBottom: 4 },
   panicEmail: { fontSize: 13, color: '#94A3B8', marginBottom: 3 },
   panicPhone: { fontSize: 14, color: '#10B981', fontWeight: '600' },
@@ -308,6 +415,15 @@ const styles = StyleSheet.create({
   panicDetails: { marginTop: 16, backgroundColor: '#0F172A', borderRadius: 12, padding: 12 },
   detailRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   detailText: { fontSize: 14, color: '#94A3B8' },
+  
+  // GPS History Card
+  gpsHistoryCard: { marginTop: 12, backgroundColor: '#F59E0B10', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#F59E0B30' },
+  gpsHistoryHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  gpsHistoryTitle: { flex: 1, fontSize: 14, fontWeight: '600', color: '#F59E0B' },
+  gpsCountBadge: { backgroundColor: '#F59E0B', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
+  gpsCountText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  gpsHistorySubtext: { fontSize: 12, color: '#94A3B8', marginTop: 4 },
+
   panicActions: { flexDirection: 'row', marginTop: 16, gap: 12 },
   respondButton: { 
     flex: 1,
@@ -323,7 +439,8 @@ const styles = StyleSheet.create({
   emptyContainer: { alignItems: 'center', paddingVertical: 80 },
   emptyText: { fontSize: 20, color: '#64748B', marginTop: 16, fontWeight: '600' },
   emptySubtext: { fontSize: 14, color: '#475569', marginTop: 4 },
-  // Respond Modal
+  
+  // Modals
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   respondModalContainer: { backgroundColor: '#1E293B', borderRadius: 20, padding: 24, width: '100%', maxWidth: 360 },
   respondModalTitle: { fontSize: 18, fontWeight: 'bold', color: '#EF4444', marginBottom: 8, textAlign: 'center' },
@@ -332,4 +449,33 @@ const styles = StyleSheet.create({
   respondModalCoords: { fontSize: 13, color: '#94A3B8', marginBottom: 20, textAlign: 'center' },
   respondModalBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: '#3B82F6', paddingVertical: 14, borderRadius: 12, marginBottom: 10 },
   respondModalBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
+
+  // Location History Modal
+  historyModalContainer: { flex: 1, backgroundColor: '#0F172A' },
+  historyModalInner: { flex: 1 },
+  historyModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#1E293B' },
+  historyModalTitle: { fontSize: 18, fontWeight: '600', color: '#fff' },
+  historyUserCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E293B', marginHorizontal: 16, marginTop: 16, borderRadius: 12, padding: 14 },
+  historyUserName: { fontSize: 16, fontWeight: '600', color: '#fff' },
+  historyUserSub: { fontSize: 13, color: '#94A3B8', marginTop: 2 },
+  historyList: { flex: 1, padding: 16 },
+
+  // Location Entry styles (like escort)
+  locationEntry: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#1E293B20', paddingHorizontal: 4 },
+  latestEntry: { backgroundColor: '#3B82F60A', borderRadius: 10, paddingHorizontal: 10 },
+  entryLeft: { width: 22, alignItems: 'center', marginRight: 12, paddingTop: 2 },
+  locationDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#334155' },
+  latestDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#10B981' },
+  locationLine: { width: 2, height: 30, backgroundColor: '#1E293B', marginTop: 3 },
+  entryContent: { flex: 1 },
+  entryTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  latestBadge: { backgroundColor: '#10B98130', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  latestBadgeText: { color: '#10B981', fontSize: 10, fontWeight: '700' },
+  coordsText: { fontSize: 13, color: '#E2E8F0', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  timeText: { fontSize: 12, color: '#64748B', marginTop: 3 },
+  accuracyText: { fontSize: 11, color: '#475569', marginTop: 1 },
+
+  noHistoryContainer: { alignItems: 'center', paddingVertical: 40 },
+  noHistoryText: { color: '#475569', fontSize: 14, marginTop: 12 },
+  noHistorySubtext: { color: '#334155', fontSize: 12, marginTop: 4 },
 });

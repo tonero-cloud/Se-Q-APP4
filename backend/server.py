@@ -498,10 +498,18 @@ async def get_panic_status(user = Depends(get_current_user)):
     if user.get('role') != 'civil':
         return {'is_active': False}
     
-    active_panic = await db.active_panics.find_one({
+    # Check panic_events collection (primary storage)
+    active_panic = await db.panic_events.find_one({
         'user_id': str(user['_id']),
         'is_active': True
     })
+    
+    # Also check legacy active_panics collection if needed
+    if not active_panic:
+        active_panic = await db.active_panics.find_one({
+            'user_id': str(user['_id']),
+            'is_active': True
+        })
     
     if active_panic:
         return {
@@ -1184,6 +1192,16 @@ async def get_nearby_panics(user = Depends(get_current_user)):
         user_email = user_info.get('email', 'Unknown')
         user_phone = user_info.get('phone', '')
         
+        # Include FULL location history for GPS tracking display
+        location_history = []
+        for loc in p.get('locations', []):
+            location_history.append({
+                'latitude': loc.get('latitude'),
+                'longitude': loc.get('longitude'),
+                'accuracy': loc.get('accuracy'),
+                'timestamp': loc.get('timestamp').isoformat() if hasattr(loc.get('timestamp'), 'isoformat') else str(loc.get('timestamp', ''))
+            })
+        
         result.append({
             'id': str(p['_id']),
             'user_id': str(p['user_id']),
@@ -1200,7 +1218,8 @@ async def get_nearby_panics(user = Depends(get_current_user)):
             'latest_longitude': latest_tracked.get('longitude', lng) if latest_tracked else lng,
             'location_count': len(p.get('locations', [])),
             'emergency_category': p.get('emergency_category', 'other'),
-            'profile_photo_url': user_info.get('profile_photo_url')
+            'profile_photo_url': user_info.get('profile_photo_url'),
+            'location_history': location_history  # Full GPS track for security dashboard
         })
     
     return result
@@ -2923,6 +2942,93 @@ async def admin_clear_uploads(user: dict = Depends(get_admin_user)):
         'message': f'Cleared {deleted_records} report records and {deleted_files} media files',
         'deleted_records': deleted_records,
         'deleted_files': deleted_files
+    }
+
+
+# ===== ADMIN: CLEAR ALL PANICS =====
+@api_router.delete("/admin/clear-panics")
+async def admin_clear_panics(user: dict = Depends(get_admin_user)):
+    """Delete all panic events and active_panics from the database"""
+    deleted_panics = 0
+    deleted_active = 0
+
+    # Delete from panic_events collection
+    result = await db.panic_events.delete_many({})
+    deleted_panics = result.deleted_count
+
+    # Delete from active_panics collection if exists
+    try:
+        result2 = await db.active_panics.delete_many({})
+        deleted_active = result2.deleted_count
+    except Exception:
+        pass
+    
+    # Also clear any lingering panic references in panics collection
+    try:
+        await db.panics.delete_many({})
+    except Exception:
+        pass
+
+    await _log_admin_action(str(user['_id']), 'clear_panics', 'panics', 'all', {
+        'deleted_panic_events': deleted_panics, 'deleted_active_panics': deleted_active
+    })
+    return {
+        'message': f'Cleared {deleted_panics} panic events and {deleted_active} active panics',
+        'deleted_panic_events': deleted_panics,
+        'deleted_active_panics': deleted_active
+    }
+
+
+# ===== ADMIN: RESET ALL DATA =====
+@api_router.delete("/admin/reset-all-data")
+async def admin_reset_all_data(user: dict = Depends(get_admin_user)):
+    """Clear ALL panic events, reports, and uploads - comprehensive cleanup"""
+    results = {
+        'panic_events': 0,
+        'active_panics': 0,
+        'civil_reports': 0,
+        'escort_sessions': 0,
+        'files_deleted': 0
+    }
+    
+    # Clear panic events
+    r = await db.panic_events.delete_many({})
+    results['panic_events'] = r.deleted_count
+    
+    # Clear active panics
+    try:
+        r = await db.active_panics.delete_many({})
+        results['active_panics'] = r.deleted_count
+    except: pass
+    
+    # Clear all civil reports
+    reports = await db.civil_reports.find({}).to_list(length=None)
+    for rep in reports:
+        file_url = rep.get('file_url', '')
+        if file_url and file_url.startswith('/api/media/'):
+            parts = file_url.replace('/api/media/', '').split('/')
+            if len(parts) == 2:
+                file_path = ROOT_DIR / 'uploads' / parts[0] / parts[1]
+                if file_path.exists():
+                    file_path.unlink()
+                    results['files_deleted'] += 1
+    
+    r = await db.civil_reports.delete_many({})
+    results['civil_reports'] = r.deleted_count
+    
+    # Clear escort sessions
+    r = await db.escort_sessions.delete_many({})
+    results['escort_sessions'] = r.deleted_count
+    
+    # Clear civil tracks
+    try:
+        await db.civil_tracks.delete_many({})
+    except: pass
+    
+    await _log_admin_action(str(user['_id']), 'reset_all_data', 'system', 'all', results)
+    return {
+        'message': 'All data cleared successfully',
+        'results': results
     }
 
 
