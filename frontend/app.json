@@ -102,7 +102,7 @@
       "eas": {
         "projectId": "2e1419f0-9ea0-45de-9f08-86d8b597e009"
       },
-      "backendUrl": "https://escort-track-app.preview.emergentagent.com",
+      "backendUrl": "https://seccomm-app.preview.emergentagent.com",
       "router": {
         "origin": false
       }
