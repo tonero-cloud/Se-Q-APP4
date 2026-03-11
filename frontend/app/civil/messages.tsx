@@ -109,7 +109,6 @@ export default function CivilMessages() {
       
       setChatMessage('');
       await loadMessages(activeConversation.id);
-      // Refresh conversations to update last message
       loadData();
     } catch (error) {
       console.error('[Messages] Send error:', error);
@@ -127,7 +126,7 @@ export default function CivilMessages() {
       if (!token) return;
       
       // Start conversation
-      const startRes = await axios.post(`${BACKEND_URL}/api/chat/start`, {
+      await axios.post(`${BACKEND_URL}/api/chat/start`, {
         other_user_id: selectedUser.id
       }, {
         headers: { Authorization: `Bearer ${token}` },
@@ -436,7 +435,6 @@ const styles = StyleSheet.create({
   tabBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   listContent: { padding: 16 },
   
-  // Broadcast styles
   broadcastCard: { backgroundColor: '#1E293B', borderRadius: 16, padding: 16, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: '#F59E0B' },
   broadcastHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   broadcastIconWrap: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F59E0B20', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
@@ -444,7 +442,6 @@ const styles = StyleSheet.create({
   broadcastTime: { fontSize: 12, color: '#64748B', marginTop: 2 },
   broadcastMessage: { fontSize: 14, color: '#CBD5E1', lineHeight: 20 },
   
-  // Conversation styles
   conversationCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: 14, padding: 14, marginBottom: 10, gap: 12 },
   avatarCircle: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
   conversationName: { fontSize: 15, fontWeight: '600', color: '#fff' },
@@ -457,7 +454,6 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 18, color: '#475569', marginTop: 16, fontWeight: '500' },
   emptySubtext: { fontSize: 14, color: '#334155', marginTop: 4 },
   
-  // Chat view
   chatHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#1E293B' },
   chatHeaderName: { fontSize: 17, fontWeight: '600', color: '#fff' },
   chatHeaderSub: { fontSize: 12, color: '#94A3B8', marginTop: 2 },
@@ -472,7 +468,6 @@ const styles = StyleSheet.create({
   sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center' },
   sendBtnDisabled: { backgroundColor: '#334155' },
   
-  // Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
   modalContainer: { backgroundColor: '#1E293B', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '85%' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },

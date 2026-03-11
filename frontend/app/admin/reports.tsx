@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, RefreshControl, Linking, Modal, Platform, Image } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, FlatList, RefreshControl, Linking, Modal, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,7 +10,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { Video, ResizeMode } from 'expo-av';
 import { Audio } from 'expo-av';
 
-const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL || 'https://seccomm-app.preview.emergentagent.com';
+const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL;
 
 type DateFilter = 'all' | 'today' | 'last_week' | 'last_month' | 'custom';
 
@@ -41,7 +41,6 @@ export default function AdminReports() {
 
   useEffect(() => {
     return () => {
-      // Cleanup audio on unmount
       if (soundRef.current) {
         soundRef.current.unloadAsync();
       }
@@ -116,7 +115,6 @@ export default function AdminReports() {
 
   const playAudio = async (fileUrl: string) => {
     try {
-      // Stop any existing audio
       if (soundRef.current) {
         await soundRef.current.unloadAsync();
       }
@@ -275,7 +273,6 @@ export default function AdminReports() {
         </TouchableOpacity>
       </View>
 
-      {/* Active Date Filter Indicator */}
       {dateFilter !== 'all' && (
         <View style={styles.dateFilterBanner}>
           <Ionicons name="calendar" size={16} color="#3B82F6" />
@@ -322,7 +319,7 @@ export default function AdminReports() {
         }
       />
 
-      {/* Date Filter Dropdown Modal */}
+      {/* Date Filter Modal */}
       <Modal visible={showDateDropdown} transparent animationType="fade">
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowDateDropdown(false)}>
           <View style={styles.dropdownContainer}>
@@ -375,7 +372,7 @@ export default function AdminReports() {
         </TouchableOpacity>
       </Modal>
 
-      {/* Native Date Pickers */}
+      {/* Date Pickers */}
       {showStartPicker && (
         <DateTimePicker
           value={customStartDate || new Date()}
@@ -416,7 +413,7 @@ export default function AdminReports() {
                 </TouchableOpacity>
               </View>
 
-              {/* Sender Info in Modal */}
+              {/* Sender Info */}
               <View style={styles.mediaModalSender}>
                 <Ionicons name="person-circle" size={32} color="#8B5CF6" />
                 <View style={{ flex: 1, marginLeft: 10 }}>

@@ -303,18 +303,39 @@ export default function AdminPanics() {
                 )}
                 
                 {selectedPanic.user_phone && (
-                  <TouchableOpacity 
-                    style={[styles.actionBtn, { backgroundColor: '#10B981' }]}
-                    onPress={() => {
-                      if (Platform.OS === 'web') {
-                        window.open(`tel:${selectedPanic.user_phone}`, '_blank');
-                      }
-                    }}
-                  >
-                    <Ionicons name="call" size={20} color="#fff" />
-                    <Text style={styles.actionBtnText}>Call User</Text>
-                  </TouchableOpacity>
+                  <>
+                    <TouchableOpacity 
+                      style={[styles.actionBtn, { backgroundColor: '#10B981' }]}
+                      onPress={() => {
+                        if (Platform.OS === 'web') {
+                          window.open(`tel:${selectedPanic.user_phone}`, '_blank');
+                        }
+                      }}
+                    >
+                      <Ionicons name="call" size={20} color="#fff" />
+                      <Text style={styles.actionBtnText}>Call User</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={[styles.actionBtn, { backgroundColor: '#8B5CF6' }]}
+                      onPress={() => {
+                        if (Platform.OS === 'web') {
+                          window.open(`sms:${selectedPanic.user_phone}`, '_blank');
+                        }
+                        setSelectedPanic(null);
+                      }}
+                    >
+                      <Ionicons name="chatbubble" size={20} color="#fff" />
+                      <Text style={styles.actionBtnText}>Message User</Text>
+                    </TouchableOpacity>
+                  </>
                 )}
+                
+                <TouchableOpacity 
+                  style={[styles.actionBtn, { backgroundColor: '#334155' }]}
+                  onPress={() => setSelectedPanic(null)}
+                >
+                  <Text style={styles.actionBtnText}>Cancel</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>

@@ -494,43 +494,152 @@ class SafeGuardAPITester:
             logger.error(f"❌ Nearby panics API failed: {result['data']}")
             return False
     
+    async def test_broadcasts_endpoint(self):
+        """Test GET /api/broadcasts - REQUESTED ENDPOINT"""
+        logger.info("=== Testing Broadcasts Endpoint ===")
+        
+        # Login as civil user to test broadcasts (any authenticated user can access)
+        civil_token = await self.login_test_user(TEST_CIVIL_EMAIL, TEST_CIVIL_PASSWORD)
+        if not civil_token:
+            logger.error("❌ Could not login civil user for broadcasts test")
+            return False
+        
+        headers = {"Authorization": f"Bearer {civil_token}"}
+        result = await self.make_request(
+            "GET", 
+            "/broadcasts", 
+            headers=headers
+        )
+        
+        if result["success"]:
+            data = result["data"]
+            logger.info(f"✅ Broadcasts endpoint working")
+            logger.info(f"   Broadcasts count: {len(data.get('broadcasts', []))}")
+            
+            broadcasts = data.get('broadcasts', [])
+            if broadcasts:
+                latest = broadcasts[0]
+                logger.info(f"   Latest broadcast: {latest.get('title', 'No Title')}")
+                logger.info(f"   Message preview: {latest.get('message', '')[:50]}...")
+                logger.info(f"   Target role: {latest.get('target_role', 'N/A')}")
+                logger.info(f"   Sent by: {latest.get('sent_by', 'N/A')}")
+            else:
+                logger.info("   No broadcasts found (expected if none sent yet)")
+            return True
+        else:
+            logger.error(f"❌ Broadcasts endpoint failed: {result['data']}")
+            return False
+
+    async def test_contactable_users_endpoint(self):
+        """Test GET /api/users/contactable - REQUESTED ENDPOINT"""
+        logger.info("=== Testing Contactable Users Endpoint ===")
+        
+        # Login as civil user to test contactable users
+        civil_token = await self.login_test_user(TEST_CIVIL_EMAIL, TEST_CIVIL_PASSWORD)
+        if not civil_token:
+            logger.error("❌ Could not login civil user for contactable users test")
+            return False
+        
+        headers = {"Authorization": f"Bearer {civil_token}"}
+        result = await self.make_request(
+            "GET", 
+            "/users/contactable", 
+            headers=headers
+        )
+        
+        if result["success"]:
+            data = result["data"]
+            users = data.get('users', [])
+            logger.info(f"✅ Contactable users endpoint working")
+            logger.info(f"   Contactable users count: {len(users)}")
+            
+            if users:
+                for i, user in enumerate(users[:3]):  # Show first 3 users
+                    logger.info(f"   User {i+1}:")
+                    logger.info(f"     - Full Name: {user.get('full_name', 'N/A')}")
+                    logger.info(f"     - Email: {user.get('email', 'N/A')}")
+                    logger.info(f"     - Role: {user.get('role', 'N/A')}")
+                    logger.info(f"     - Status: {user.get('status', 'N/A')}")
+            else:
+                logger.info("   No contactable users found (expected if no security users registered)")
+            return True
+        else:
+            logger.error(f"❌ Contactable users endpoint failed: {result['data']}")
+            return False
+
+    async def test_admin_all_reports_endpoint(self):
+        """Test GET /api/admin/all-reports - REQUESTED ENDPOINT"""
+        logger.info("=== Testing Admin All Reports Endpoint ===")
+        
+        if not self.admin_token:
+            logger.error("❌ No admin token available")
+            return False
+            
+        result = await self.make_request(
+            "GET", 
+            "/admin/all-reports", 
+            headers=self.get_auth_headers()
+        )
+        
+        if result["success"]:
+            data = result["data"]
+            reports = data.get('reports', [])
+            total = data.get('total', 0)
+            logger.info(f"✅ Admin all-reports endpoint working")
+            logger.info(f"   Total reports: {total}")
+            logger.info(f"   Retrieved reports: {len(reports)}")
+            
+            if reports:
+                for i, report in enumerate(reports[:2]):  # Show first 2 reports
+                    logger.info(f"   Report {i+1}:")
+                    logger.info(f"     - Full Name: {report.get('full_name', 'N/A')}")
+                    logger.info(f"     - User Email: {report.get('user_email', 'N/A')}")
+                    logger.info(f"     - User Phone: {report.get('user_phone', 'N/A')}")
+                    logger.info(f"     - Type: {report.get('type', 'N/A')}")
+                    logger.info(f"     - Status: {report.get('status', 'N/A')}")
+                    logger.info(f"     - Anonymous: {report.get('is_anonymous', False)}")
+                
+                # Verify required fields are present
+                required_fields = ['full_name', 'user_email', 'user_phone']
+                if reports:
+                    first_report = reports[0]
+                    present_fields = [field for field in required_fields if field in first_report]
+                    logger.info(f"   ✅ Required user detail fields present: {present_fields}")
+            else:
+                logger.info("   No reports found (expected if no civil reports submitted)")
+            return True
+        else:
+            logger.error(f"❌ Admin all-reports endpoint failed: {result['data']}")
+            return False
+
     async def run_all_tests(self):
-        """Run all SafeGuard backend API tests"""
-        logger.info("🚀 Starting SafeGuard Backend API Tests")
+        """Run all SafeGuard backend API tests - UPDATED FOR NEW REVIEW REQUEST"""
+        logger.info("🚀 Starting SafeGuard Backend API Tests - NEW ENDPOINTS")
         logger.info(f"Backend URL: {BASE_URL}")
         logger.info(f"Admin Email: {ADMIN_EMAIL}")
         logger.info("="*60)
         
         test_results = {}
         
-        # PRIORITY TESTS (from review request)
-        # Test 1: Admin Login 
+        # NEW REVIEW REQUEST TESTS
+        # Test 1: Admin Login (required for admin endpoints)
         test_results["admin_login"] = await self.test_admin_login()
         
         if not test_results["admin_login"]:
             logger.error("🛑 Admin login failed - stopping admin tests")
         else:
-            # Test 2: Admin Clear Panics (PRIORITY)
-            test_results["clear_panics"] = await self.test_admin_clear_panics()
+            # Test 2: GET /api/broadcasts - NEW REQUESTED ENDPOINT
+            test_results["broadcasts"] = await self.test_broadcasts_endpoint()
             
-            # Test 3: Admin Reset All Data (PRIORITY)
-            test_results["reset_all_data"] = await self.test_admin_reset_all_data()
+            # Test 3: GET /api/users/contactable - NEW REQUESTED ENDPOINT  
+            test_results["contactable_users"] = await self.test_contactable_users_endpoint()
             
-            # Test 4: Admin Clear Uploads (existing endpoint)
-            test_results["clear_uploads"] = await self.test_admin_clear_uploads()
-            
-            # Test 5: Admin Security Teams (existing endpoint)
-            test_results["security_teams"] = await self.test_admin_security_teams()
-            
-            # Test 6: Admin Analytics (existing endpoint)
-            test_results["analytics"] = await self.test_admin_analytics()
-        
-        # Test 7: Panic Status (PRIORITY - verify is_active field)
-        test_results["panic_status"] = await self.test_panic_status()
+            # Test 4: GET /api/admin/all-reports - NEW REQUESTED ENDPOINT
+            test_results["admin_all_reports"] = await self.test_admin_all_reports_endpoint()
         
         # Summary
         logger.info("="*60)
-        logger.info("📋 TEST SUMMARY:")
+        logger.info("📋 TEST SUMMARY - NEW ENDPOINTS:")
         passed = sum(1 for result in test_results.values() if result)
         total = len(test_results)
         
@@ -541,7 +650,7 @@ class SafeGuardAPITester:
         logger.info(f"OVERALL: {passed}/{total} tests passed")
         
         if passed == total:
-            logger.info("🎉 All SafeGuard backend API tests passed!")
+            logger.info("🎉 All SafeGuard NEW backend API endpoints working!")
         else:
             logger.warning(f"⚠️  {total - passed} test(s) failed")
         

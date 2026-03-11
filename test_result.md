@@ -329,11 +329,47 @@ backend:
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: true
         agent: "main"
         comment: "Updated GET /api/security/nearby-panics to return full location_history array"
+
+  - task: "Broadcasts Endpoint"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED - GET /api/broadcasts working correctly. Returns proper JSON structure with broadcasts array. Found 1 existing broadcast 'Welcome to Se-Q' targeting civil users. Response includes all required fields: title, message, target_role, sent_by, sent_at."
+
+  - task: "Contactable Users Endpoint"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED - GET /api/users/contactable working correctly. Returns proper JSON structure with users array. Found 1 contactable user (Paul Biy, security role). Response includes all required fields: id, full_name, email, role, status, profile_photo_url."
+
+  - task: "Admin All Reports Endpoint"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED - GET /api/admin/all-reports working correctly with admin authentication. Returns proper JSON with reports array and total count. Found 2 reports with full user details. Correctly includes all required fields: full_name, user_email, user_phone. Handles both anonymous and non-anonymous reports properly."
 
 frontend:
   - task: "NativeMap Web Component"
@@ -544,3 +580,35 @@ agent_communication:
       Backend URL: https://seccomm-app.preview.emergentagent.com/api
       All 7/7 backend tests PASSED. New admin cleanup endpoints functioning correctly.
       All APIs return proper status codes (200 OK) and expected JSON responses.
+
+  - agent: "testing"
+    message: |
+      SAFEGUARD NEW ENDPOINTS TESTING COMPLETED - ALL REQUESTED APIS WORKING PERFECTLY
+      
+      ✅ Successfully tested all 4 REQUESTED endpoints from review request:
+      
+      1. **Admin Login** - POST /api/admin/login
+         - ✅ Working perfectly with credentials: anthonyezedinachi@gmail.com / Admin123!
+         - Token generation successful, proper authentication working
+      
+      2. **Broadcasts Endpoint** - GET /api/broadcasts (NEW ENDPOINT TESTED)
+         - ✅ Working correctly with authenticated users
+         - Returns proper JSON structure with broadcasts array
+         - Found 1 existing broadcast: "Welcome to Se-Q" targeting civil users
+         - Response includes all required fields: title, message, target_role, sent_by, sent_at
+      
+      3. **Contactable Users** - GET /api/users/contactable (NEW ENDPOINT TESTED)
+         - ✅ Working correctly with authenticated users  
+         - Returns proper JSON structure with users array
+         - Found 1 contactable user (Paul Biy, security role)
+         - Response includes all required fields: id, full_name, email, role, status, profile_photo_url
+      
+      4. **Admin All Reports** - GET /api/admin/all-reports (NEW ENDPOINT TESTED)
+         - ✅ Working correctly with admin authentication required
+         - Returns proper JSON with reports array and total count (found 2 reports)
+         - Correctly includes ALL REQUIRED user detail fields: full_name, user_email, user_phone
+         - Handles both anonymous and non-anonymous reports properly
+      
+      Backend URL: https://seccomm-app.preview.emergentagent.com/api
+      All 4/4 NEW REQUESTED endpoints PASSED testing. All APIs working as expected.
+      No critical issues found. All endpoints return proper status codes (200 OK) and expected JSON responses.

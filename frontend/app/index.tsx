@@ -143,13 +143,8 @@ export default function Index() {
           return;
         }
         
-        // No PIN set or already verified - show panic prompt or go to home
-        if (hasPanic) {
-          // Has active panic but no PIN - just go to home so they can resolve it
-          setMode('panic_prompt');
-        } else {
-          setMode('panic_prompt');
-        }
+        // No PIN set - show panic prompt
+        setMode('panic_prompt');
         return;
       }
       
