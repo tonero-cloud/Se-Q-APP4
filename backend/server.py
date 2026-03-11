@@ -2117,6 +2117,8 @@ async def admin_broadcast(
 @api_router.get("/admin/all-reports")
 async def admin_all_reports(
     report_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     skip: int = 0,
     limit: int = 50,
     user: dict = Depends(get_admin_user)
@@ -2125,6 +2127,23 @@ async def admin_all_reports(
     query = {}
     if report_type:
         query['type'] = report_type
+    
+    # Date filtering
+    if start_date or end_date:
+        date_query = {}
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                date_query['$gte'] = start_dt
+            except: pass
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                date_query['$lte'] = end_dt
+            except: pass
+        if date_query:
+            query['created_at'] = date_query
+    
     reports = await db.civil_reports.find(query).sort('created_at', -1).skip(skip).limit(limit).to_list(length=limit)
     total = await db.civil_reports.count_documents(query)
     result = []
@@ -2154,6 +2173,61 @@ async def admin_all_reports(
             'created_at': r.get('created_at', datetime.utcnow()).isoformat()
         })
     return {'reports': result, 'total': total}
+
+
+# ===== BROADCASTS ENDPOINTS =====
+@api_router.get("/broadcasts")
+async def get_broadcasts(skip: int = 0, limit: int = 30, user: dict = Depends(get_current_user)):
+    """Get broadcast messages for the user (all or by role)"""
+    user_role = user.get('role', 'civil')
+    
+    # Get broadcasts targeted to this user's role or all users
+    query = {'$or': [{'target_role': 'all'}, {'target_role': user_role}]}
+    
+    broadcasts = await db.broadcasts.find(query).sort('sent_at', -1).skip(skip).limit(limit).to_list(length=limit)
+    
+    return {
+        'broadcasts': [{
+            'id': str(b['_id']),
+            'title': b.get('title', ''),
+            'message': b.get('message', ''),
+            'target_role': b.get('target_role', 'all'),
+            'sent_by': b.get('sent_by', 'Admin'),
+            'sent_at': b.get('sent_at', datetime.utcnow()).isoformat()
+        } for b in broadcasts]
+    }
+
+
+# ===== USERS LIST FOR MESSAGING =====
+@api_router.get("/users/contactable")
+async def get_contactable_users(user: dict = Depends(get_current_user)):
+    """Get list of users that can be messaged by the current user"""
+    user_role = user.get('role', 'civil')
+    user_id = str(user['_id'])
+    
+    # Civil users can message security users
+    # Security users can message civil users and other security users
+    # Admins can message everyone
+    
+    if user_role == 'civil':
+        query = {'role': 'security', 'is_active': True, '_id': {'$ne': ObjectId(user_id)}}
+    elif user_role == 'security':
+        query = {'role': {'$in': ['civil', 'security']}, 'is_active': True, '_id': {'$ne': ObjectId(user_id)}}
+    else:  # admin
+        query = {'is_active': True, '_id': {'$ne': ObjectId(user_id)}}
+    
+    users = await db.users.find(query).limit(100).to_list(length=100)
+    
+    return {
+        'users': [{
+            'id': str(u['_id']),
+            'full_name': u.get('full_name') or u.get('email', 'Unknown'),
+            'email': u.get('email', ''),
+            'role': u.get('role', 'civil'),
+            'status': u.get('status', 'offline'),
+            'profile_photo_url': u.get('profile_photo_url')
+        } for u in users]
+    }
 
 @api_router.post("/admin/invite-codes")
 async def admin_create_invite_code(code_data: CreateInviteCode, user: dict = Depends(get_admin_user)):

@@ -269,11 +269,11 @@ export default function CivilHome() {
               <Text style={styles.actionText}>Security Escort</Text>
               {!isPremium && <Text style={styles.premiumBadge}>⭐ Premium</Text>}
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionCard} onPress={() => router.push('/report/list')}>
+            <TouchableOpacity style={styles.actionCard} onPress={() => router.push('/civil/messages')}>
               <View style={[styles.actionIcon, { backgroundColor: '#F59E0B20' }]}>
-                <Ionicons name="folder" size={28} color="#F59E0B" />
+                <Ionicons name="chatbubbles" size={28} color="#F59E0B" />
               </View>
-              <Text style={styles.actionText}>My Reports</Text>
+              <Text style={styles.actionText}>Message Centre</Text>
             </TouchableOpacity>
           </View>
         </View>

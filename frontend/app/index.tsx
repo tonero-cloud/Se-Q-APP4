@@ -20,12 +20,14 @@ export default function Index() {
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
   const [pinAttempts, setPinAttempts] = useState(0);
+  const [hasActivePanic, setHasActivePanic] = useState(false);
   const shakeAnim = useRef(new Animated.Value(0)).current;
   const [gameScore, setGameScore] = useState(0);
   const [gameTarget, setGameTarget] = useState<{x: number; y: number} | null>(null);
   const gameInterval = useRef<any>(null);
   const appStateRef = useRef(AppState.currentState);
   const isCheckingAuth = useRef(false);
+  const hasShownPinOnce = useRef(false);
 
   useEffect(() => {
     const timer = setTimeout(() => { checkAuth(); }, 100);
@@ -48,18 +50,23 @@ export default function Index() {
     }
   }, [mode]);
 
-  // Handle app coming back from background
+  // Handle app coming back from background - ALWAYS show PIN for security
   const handleAppStateChange = async (nextAppState: string) => {
     if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
       console.log('[Index] App returned to foreground');
-      // Check if user has active panic - show PIN lock
+      
       const metadata = await getUserMetadata();
       if (metadata?.role === 'civil') {
-        const hasActivePanic = await checkBackendPanicStatus();
-        if (hasActivePanic) {
+        // Check if PIN is set - if so, always show PIN lock for security
+        const savedPin = await AsyncStorage.getItem('security_pin');
+        if (savedPin) {
+          // Check for active panic status
+          const hasPanic = await checkBackendPanicStatus();
+          setHasActivePanic(hasPanic);
           setMode('pin_lock');
           setPinInput('');
           setPinError('');
+          console.log('[Index] Showing PIN lock on app return (security feature)');
         }
       }
     }
@@ -122,18 +129,27 @@ export default function Index() {
       
       setUserRole(metadata.role);
       
-      // For civil users, check if there's an active panic (from backend first, then local)
+      // For civil users, check PIN and panic status
       if (metadata.role === 'civil') {
-        const hasActivePanic = await checkBackendPanicStatus();
+        const savedPin = await AsyncStorage.getItem('security_pin');
+        const hasPanic = await checkBackendPanicStatus();
+        setHasActivePanic(hasPanic);
         
-        if (hasActivePanic) {
-          console.log('[Index] Active panic found - showing PIN lock');
+        // If PIN is set and not shown yet in this session, show PIN lock
+        if (savedPin && !hasShownPinOnce.current) {
+          hasShownPinOnce.current = true;
+          console.log('[Index] PIN set - showing PIN lock');
           setMode('pin_lock');
           return;
         }
         
-        // No active panic - show normal home or panic prompt
-        setMode('panic_prompt');
+        // No PIN set or already verified - show panic prompt or go to home
+        if (hasPanic) {
+          // Has active panic but no PIN - just go to home so they can resolve it
+          setMode('panic_prompt');
+        } else {
+          setMode('panic_prompt');
+        }
         return;
       }
       
@@ -169,17 +185,17 @@ export default function Index() {
     try {
       const savedPin = await AsyncStorage.getItem('security_pin');
       
-      // If no PIN is set, just go to panic-active
+      // If no PIN is set, go directly to civil home
       if (!savedPin) {
-        router.replace('/civil/panic-active');
+        router.replace('/civil/home');
         return;
       }
       
       if (pin === savedPin) {
-        // ✅ Correct PIN — navigate to panic-active so "I'm Safe Now" is accessible
+        // ✅ Correct PIN — ALWAYS navigate to Civil Dashboard
         setPinInput('');
         setPinError('');
-        router.replace('/civil/panic-active');
+        router.replace('/civil/home');
       } else {
         // ❌ Wrong PIN → disguise game
         setPinAttempts(a => a + 1);
@@ -236,6 +252,12 @@ export default function Index() {
             <Ionicons name="lock-closed" size={52} color="#EF4444" />
             <Text style={styles.pinLockTitle}>App Locked</Text>
             <Text style={styles.pinLockSubtitle}>Enter your security PIN to continue</Text>
+            {hasActivePanic && (
+              <View style={styles.panicIndicator}>
+                <Ionicons name="alert-circle" size={16} color="#EF4444" />
+                <Text style={styles.panicIndicatorText}>Panic mode active</Text>
+              </View>
+            )}
           </View>
           <Animated.View style={[styles.pinDots, { transform: [{ translateX: shakeAnim }] }]}>
             {[0,1,2,3].map(i => (
@@ -325,6 +347,8 @@ const styles = StyleSheet.create({
   pinLockHeader: { alignItems: 'center', marginBottom: 40 },
   pinLockTitle: { fontSize: 28, fontWeight: 'bold', color: '#fff', marginTop: 16 },
   pinLockSubtitle: { fontSize: 15, color: '#94A3B8', marginTop: 8, textAlign: 'center' },
+  panicIndicator: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, backgroundColor: '#EF444420', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
+  panicIndicatorText: { fontSize: 13, color: '#EF4444', fontWeight: '600' },
   pinDots: { flexDirection: 'row', gap: 20, marginBottom: 8 },
   pinDot: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#475569' },
   pinDotFilled: { backgroundColor: '#EF4444', borderColor: '#EF4444' },
