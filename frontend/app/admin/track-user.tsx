@@ -205,11 +205,13 @@ export default function AdminTrackUser() {
             </View>
 
             {/* Role Badge */}
-            <View style={styles.roleRow}>
-              <View style={[styles.roleBadge, { backgroundColor: roleColor + '20' }]}>
-                <Text style={[styles.roleBadgeText, { color: roleColor }]}>{roleLabel}</Text>
+            {trackData?.role && (
+              <View style={styles.roleRow}>
+                <View style={[styles.roleBadge, { backgroundColor: roleColor + '20' }]}>
+                  <Text style={[styles.roleBadgeText, { color: roleColor }]}>{roleLabel}</Text>
+                </View>
               </View>
-            </View>
+            )}
 
             {/* Status + Call */}
             <View style={styles.statusRow}>
