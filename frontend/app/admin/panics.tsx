@@ -1,426 +1,452 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, RefreshControl, Modal, Platform } from 'react-native';
+/**
+ * security/panics.tsx — Active Panics
+ *
+ * Phase 2.1: Shows all recorded GPS coordinates for each active panic
+ * inline in the card (no modal needed), updating every 10 seconds.
+ * Layout mirrors the Security Escort GPS track view.
+ */
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  View, Text, TouchableOpacity, StyleSheet, FlatList,
+  ActivityIndicator, Alert, Linking, Platform, Modal,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import Constants from 'expo-constants';
 import { getAuthToken, clearAuthData } from '../../utils/auth';
-import { NativeMap } from '../../components/NativeMap';
+import { LocationMapModal } from '../../components/LocationMapModal';
 
-const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL;
+const BACKEND_URL =
+  Constants.expoConfig?.extra?.backendUrl ||
+  process.env.EXPO_PUBLIC_BACKEND_URL ||
+  'https://ongoing-dev-22.preview.emergentagent.com';
 
-type DateFilter = 'all' | 'today' | 'last_week' | 'last_month' | 'last_3_months' | 'custom';
+// Poll every 10 seconds for live GPS
+const POLL_INTERVAL = 10000;
 
-export default function AdminPanics() {
+const EMERGENCY_CATEGORIES: Record<string, { label: string; icon: string; color: string }> = {
+  violence:   { label: 'Violence/Assault',       icon: 'alert-circle', color: '#EF4444' },
+  robbery:    { label: 'Armed Robbery',           icon: 'warning',      color: '#F97316' },
+  kidnapping: { label: 'Kidnapping',              icon: 'body',         color: '#DC2626' },
+  breakin:    { label: 'Break-in/Burglary',       icon: 'home',         color: '#8B5CF6' },
+  harassment: { label: 'Harassment/Stalking',     icon: 'eye',          color: '#EC4899' },
+  medical:    { label: 'Medical Emergency',       icon: 'medkit',       color: '#10B981' },
+  fire:       { label: 'Fire Outbreak',           icon: 'flame',        color: '#F59E0B' },
+  other:      { label: 'Other Emergency',         icon: 'help-circle',  color: '#64748B' },
+};
+
+interface GpsPt {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+  timestamp: string;
+}
+
+export default function SecurityPanics() {
   const router = useRouter();
   const [panics, setPanics] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [showActiveOnly, setShowActiveOnly] = useState(false);
-  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
-  const [showDateDropdown, setShowDateDropdown] = useState(false);
-  const [selectedPanic, setSelectedPanic] = useState<any>(null);
-  const [locationModal, setLocationModal] = useState<{visible: boolean; lat: number; lng: number; title: string} | null>(null);
+  const [locationModal, setLocationModal] = useState<{
+    visible: boolean; lat: number; lng: number; title: string
+  } | null>(null);
+  const [respondModal, setRespondModal] = useState<any>(null);
+  const [countdown, setCountdown] = useState(10);
+  const pollRef = useRef<any>(null);
+  const countRef = useRef<any>(null);
 
-  useEffect(() => {
-    loadPanics();
-  }, [showActiveOnly, dateFilter]);
+  // ── Focus: start polling ──────────────────────────────────────────────────
+  useFocusEffect(
+    useCallback(() => {
+      loadPanics();
+      startPolling();
+      return () => stopPolling();
+    }, [])
+  );
 
-  const getDateRange = () => {
-    const now = new Date();
-    let startDate: Date | null = null;
-    
-    switch (dateFilter) {
-      case 'today':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        break;
-      case 'last_week':
-        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        break;
-      case 'last_month':
-        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        break;
-      case 'last_3_months':
-        startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-        break;
-      default:
-        return '';
-    }
-    
-    return startDate ? `&start_date=${startDate.toISOString()}` : '';
+  const startPolling = () => {
+    stopPolling();
+    pollRef.current = setInterval(() => {
+      loadPanics();
+      setCountdown(10);
+    }, POLL_INTERVAL);
+    countRef.current = setInterval(() => {
+      setCountdown(p => (p <= 1 ? 10 : p - 1));
+    }, 1000);
+  };
+
+  const stopPolling = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (countRef.current) clearInterval(countRef.current);
   };
 
   const loadPanics = async () => {
     try {
       const token = await getAuthToken();
-      if (!token) {
-        router.replace('/admin/login');
-        return;
-      }
-      
-      const dateParams = getDateRange();
-      const response = await axios.get(
-        `${BACKEND_URL}/api/admin/all-panics?active_only=${showActiveOnly}&limit=100${dateParams}`,
-        { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      if (!token) { router.replace('/auth/login'); return; }
+      const res = await axios.get(
+        `${BACKEND_URL}/api/security/nearby-panics?t=${Date.now()}`,
+        { headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' }, timeout: 15000 }
       );
-      setPanics(response.data.panics || []);
-    } catch (error: any) {
-      console.error('[AdminPanics] Failed to load panics:', error?.response?.status);
-      if (error?.response?.status === 401) {
+      setPanics(res.data || []);
+    } catch (err: any) {
+      if (err?.response?.status === 401) {
         await clearAuthData();
-        router.replace('/admin/login');
+        router.replace('/auth/login');
       }
     } finally {
       setLoading(false);
     }
   };
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await loadPanics();
-    setRefreshing(false);
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const catInfo = (cat: string) => EMERGENCY_CATEGORIES[cat] || EMERGENCY_CATEGORIES.other;
+
+  const formatTime = (ts: string) => {
+    try {
+      return new Date(ts).toLocaleString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        month: 'short', day: 'numeric',
+      });
+    } catch { return ts; }
   };
 
-  const getCategoryInfo = (category: string) => {
-    const info: any = {
-      violence: { color: '#EF4444', icon: 'hand-left', label: 'Violence' },
-      robbery: { color: '#F59E0B', icon: 'cash', label: 'Robbery' },
-      kidnapping: { color: '#DC2626', icon: 'car', label: 'Kidnapping' },
-      medical: { color: '#3B82F6', icon: 'medkit', label: 'Medical' },
-      fire: { color: '#F97316', icon: 'flame', label: 'Fire' },
-      harassment: { color: '#8B5CF6', icon: 'warning', label: 'Harassment' },
-      other: { color: '#64748B', icon: 'alert', label: 'Other' }
+  const formatDateTime = (ts: string) => {
+    const d = new Date(ts);
+    return {
+      date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
     };
-    return info[category] || info.other;
   };
 
-  const getDateFilterLabel = () => {
-    const labels: any = {
-      'all': 'All Time',
-      'today': 'Today',
-      'last_week': 'Last Week',
-      'last_month': 'Last Month',
-      'last_3_months': 'Last 3 Months',
-      'custom': 'Custom Period'
-    };
-    return labels[dateFilter] || 'All Time';
+  const getSenderName = (item: any) =>
+    (item.full_name || '').trim() || item.user_email || item.email || 'Unknown User';
+
+  const callUser = (phone: string) =>
+    phone ? Linking.openURL(`tel:${phone}`) : Alert.alert('No Phone', 'Phone number not available');
+
+  const openInMaps = (lat: number, lng: number, label: string) => {
+    const url = Platform.select({
+      ios: `maps:?q=${encodeURIComponent(label)}&ll=${lat},${lng}`,
+      android: `geo:${lat},${lng}?q=${lat},${lng}(${encodeURIComponent(label)})`,
+    });
+    if (url) Linking.openURL(url).catch(() => Alert.alert('Error', 'Could not open maps'));
   };
 
-  const handlePanicPress = (item: any) => {
-    if (item.is_active) {
-      setSelectedPanic(item);
-    }
-    // Resolved panics are not clickable
-  };
+  // ── GPS timeline row ──────────────────────────────────────────────────────
+  const renderGpsRow = (pt: GpsPt, index: number, total: number) => (
+    <TouchableOpacity
+      key={`${index}-${pt.timestamp}`}
+      style={[gpsStyles.row, index === 0 && gpsStyles.rowLatest]}
+      onPress={() =>
+        setLocationModal({
+          visible: true,
+          lat: pt.latitude,
+          lng: pt.longitude,
+          title: `Location @ ${formatTime(pt.timestamp)}`,
+        })
+      }
+      activeOpacity={0.7}
+    >
+      <View style={gpsStyles.trail}>
+        <View style={[gpsStyles.dot, index === 0 && gpsStyles.dotLatest]} />
+        {index < total - 1 && <View style={gpsStyles.line} />}
+      </View>
+      <View style={gpsStyles.content}>
+        <View style={gpsStyles.topRow}>
+          {index === 0 && (
+            <View style={gpsStyles.latestBadge}>
+              <Text style={gpsStyles.latestBadgeText}>LATEST</Text>
+            </View>
+          )}
+          <Text style={gpsStyles.coords} numberOfLines={1}>
+            {pt.latitude.toFixed(6)}, {pt.longitude.toFixed(6)}
+          </Text>
+        </View>
+        <Text style={gpsStyles.time}>{formatTime(pt.timestamp)}</Text>
+        {pt.accuracy != null && (
+          <Text style={gpsStyles.accuracy}>±{Math.round(pt.accuracy)}m accuracy</Text>
+        )}
+      </View>
+      <Ionicons name="map-outline" size={16} color="#3B82F6" style={{ marginLeft: 6 }} />
+    </TouchableOpacity>
+  );
 
+  // ── Panic card ────────────────────────────────────────────────────────────
   const renderPanic = ({ item }: any) => {
-    const category = getCategoryInfo(item.emergency_category);
-    const isActive = item.is_active;
-    
+    const cat = catInfo(item.emergency_category);
+    const dt = formatDateTime(item.activated_at);
+    const name = getSenderName(item);
+    const history: GpsPt[] = item.location_history || [];
+    // Show most-recent first
+    const chronoHistory = [...history].reverse();
+
     return (
-      <TouchableOpacity 
-        style={[styles.panicCard, isActive && styles.activeCard]}
-        onPress={() => handlePanicPress(item)}
-        disabled={!isActive}
-        activeOpacity={isActive ? 0.7 : 1}
-      >
-        {/* Top row - Status and Category */}
-        <View style={styles.panicTopRow}>
-          <View style={[styles.statusBadge, { backgroundColor: isActive ? '#EF444420' : '#10B98120' }]}>
-            <Ionicons name={isActive ? 'alert-circle' : 'checkmark-circle'} size={14} color={isActive ? '#EF4444' : '#10B981'} />
-            <Text style={[styles.statusText, { color: isActive ? '#EF4444' : '#10B981' }]}>
-              {isActive ? 'ACTIVE' : 'RESOLVED'}
-            </Text>
+      <View style={styles.card}>
+        {/* Top badges */}
+        <View style={styles.topRow}>
+          <View style={styles.activeBadge}>
+            <Ionicons name="alert-circle" size={14} color="#EF4444" />
+            <Text style={styles.activeBadgeText}>ACTIVE PANIC</Text>
           </View>
-          <View style={[styles.categoryBadge, { backgroundColor: category.color + '20' }]}>
-            <Ionicons name={category.icon} size={14} color={category.color} />
-            <Text style={[styles.categoryText, { color: category.color }]}>{category.label}</Text>
+          <View style={[styles.catBadge, { backgroundColor: `${cat.color}20` }]}>
+            <Ionicons name={cat.icon as any} size={14} color={cat.color} />
+            <Text style={[styles.catText, { color: cat.color }]}>{cat.label}</Text>
           </View>
         </View>
-        
+
         {/* User info */}
-        <Text style={styles.userName}>{item.user_name || item.full_name || 'Unknown User'}</Text>
-        <Text style={styles.userEmail}>{item.user_email || `User ID: ${item.user_id?.substring(0, 12)}...`}</Text>
-        
-        {/* Timestamps */}
-        <View style={styles.timeInfo}>
-          <Text style={styles.timestamp}>
-            🕐 Started: {new Date(item.activated_at).toLocaleString()}
-          </Text>
-          {item.deactivated_at && (
-            <Text style={styles.timestamp}>
-              ✅ Ended: {new Date(item.deactivated_at).toLocaleString()}
-            </Text>
+        <View style={styles.userRow}>
+          <View style={styles.avatar}>
+            <Ionicons name="person-circle" size={44} color="#3B82F6" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.userName}>{name}</Text>
+            <Text style={styles.userEmail}>{item.user_email || 'No email'}</Text>
+            {item.user_phone ? (
+              <Text style={styles.userPhone}>{item.user_phone}</Text>
+            ) : (
+              <Text style={styles.userPhoneEmpty}>No phone on file</Text>
+            )}
+          </View>
+        </View>
+
+        {/* Details */}
+        <View style={styles.details}>
+          {[
+            { icon: 'calendar', text: dt.date },
+            { icon: 'time', text: dt.time },
+            { icon: 'location', text: `${item.latitude?.toFixed(4)}, ${item.longitude?.toFixed(4)}` },
+            { icon: 'pulse', text: `${item.location_count || 0} location updates`, color: '#10B981' },
+          ].map((r, i) => (
+            <View key={i} style={styles.detailRow}>
+              <Ionicons name={r.icon as any} size={15} color={r.color || '#94A3B8'} />
+              <Text style={[styles.detailText, r.color ? { color: r.color } : {}]}>{r.text}</Text>
+            </View>
+          ))}
+        </View>
+
+        {/* ── LIVE GPS TRACK ── */}
+        <View style={gpsStyles.container}>
+          <View style={gpsStyles.header}>
+            <Ionicons name="trail-sign" size={16} color="#F59E0B" />
+            <Text style={gpsStyles.title}>Live GPS Track</Text>
+            {history.length > 0 && (
+              <View style={gpsStyles.countBadge}>
+                <Text style={gpsStyles.countText}>{history.length}</Text>
+              </View>
+            )}
+            <View style={gpsStyles.liveBadge}>
+              <View style={gpsStyles.liveDot} />
+              <Text style={gpsStyles.liveText}>LIVE · {countdown}s</Text>
+            </View>
+          </View>
+
+          {chronoHistory.length === 0 ? (
+            <View style={gpsStyles.empty}>
+              <Ionicons name="time-outline" size={28} color="#334155" />
+              <Text style={gpsStyles.emptyText}>No GPS coordinates yet</Text>
+              <Text style={gpsStyles.emptySubtext}>Points will appear as user moves</Text>
+            </View>
+          ) : (
+            <View>
+              {chronoHistory.map((pt, i) => renderGpsRow(pt, i, chronoHistory.length))}
+            </View>
           )}
         </View>
-        
-        {/* Location */}
-        {item.location?.coordinates && (
-          <Text style={styles.location}>
-            📍 {item.location.coordinates[1]?.toFixed(4)}, {item.location.coordinates[0]?.toFixed(4)}
-          </Text>
-        )}
-        
-        {/* Clickable indicator for active */}
-        {isActive && (
-          <View style={styles.tapIndicator}>
-            <Ionicons name="chevron-forward" size={16} color="#EF4444" />
-            <Text style={styles.tapText}>Tap to respond</Text>
-          </View>
-        )}
-      </TouchableOpacity>
+
+        {/* Actions */}
+        <View style={styles.actions}>
+          <TouchableOpacity
+            style={styles.respondBtn}
+            onPress={() => {
+              if (!item.latitude || !item.longitude) {
+                Alert.alert('Location Error', 'User location not available');
+                return;
+              }
+              setRespondModal(item);
+            }}
+          >
+            <Ionicons name="navigate" size={20} color="#fff" />
+            <Text style={styles.respondBtnText}>Respond</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     );
   };
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.replace("/admin/dashboard")} style={styles.backBtn}>
+        <TouchableOpacity onPress={() => router.replace('/security/home')} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
-        <Text style={styles.title}>All Panics</Text>
-        <View style={styles.headerRight}>
-          {/* Toggle Active Only */}
-          <TouchableOpacity onPress={() => setShowActiveOnly(!showActiveOnly)} style={styles.headerIconBtn}>
-            <Ionicons 
-              name={showActiveOnly ? 'filter' : 'filter-outline'} 
-              size={22} 
-              color={showActiveOnly ? '#EF4444' : '#fff'} 
-            />
-          </TouchableOpacity>
-          {/* Calendar Filter */}
-          <TouchableOpacity onPress={() => setShowDateDropdown(true)} style={styles.headerIconBtn}>
-            <Ionicons name="calendar-outline" size={22} color={dateFilter !== 'all' ? '#3B82F6' : '#fff'} />
-          </TouchableOpacity>
-        </View>
+        <Text style={styles.headerTitle}>Active Panics ({panics.length})</Text>
+        <TouchableOpacity onPress={() => { loadPanics(); setCountdown(10); }}>
+          <Ionicons name="refresh" size={24} color="#fff" />
+        </TouchableOpacity>
       </View>
 
-      {/* Filter indicators */}
-      {(showActiveOnly || dateFilter !== 'all') && (
-        <View style={styles.filterBanner}>
-          {showActiveOnly && <Text style={styles.filterChip}>🔴 Active Only</Text>}
-          {dateFilter !== 'all' && <Text style={styles.filterChip}>📅 {getDateFilterLabel()}</Text>}
+      {loading ? (
+        <View style={styles.loadingBox}>
+          <ActivityIndicator size="large" color="#EF4444" />
         </View>
-      )}
-
-      <FlatList
-        data={panics}
-        renderItem={renderPanic}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#8B5CF6" />}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Ionicons name="checkmark-circle" size={48} color="#10B981" />
-            <Text style={styles.emptyText}>
-              {showActiveOnly ? 'No active panics' : 'No panic events recorded'}
-            </Text>
-          </View>
-        }
-      />
-
-      {/* Date Filter Dropdown Modal */}
-      <Modal visible={showDateDropdown} transparent animationType="fade">
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowDateDropdown(false)}>
-          <View style={styles.dropdownContainer}>
-            <Text style={styles.dropdownTitle}>Filter by Period</Text>
-            {[
-              { key: 'all', label: 'All Time', icon: 'infinite' },
-              { key: 'today', label: 'Today', icon: 'today' },
-              { key: 'last_week', label: 'Last Week', icon: 'calendar' },
-              { key: 'last_month', label: 'Last Month', icon: 'calendar-outline' },
-              { key: 'last_3_months', label: 'Last 3 Months', icon: 'time' },
-            ].map((option) => (
-              <TouchableOpacity 
-                key={option.key}
-                style={[styles.dropdownItem, dateFilter === option.key && styles.dropdownItemActive]}
-                onPress={() => { setDateFilter(option.key as DateFilter); setShowDateDropdown(false); }}
-              >
-                <Ionicons name={option.icon as any} size={20} color={dateFilter === option.key ? '#3B82F6' : '#94A3B8'} />
-                <Text style={[styles.dropdownItemText, dateFilter === option.key && styles.dropdownItemTextActive]}>
-                  {option.label}
-                </Text>
-                {dateFilter === option.key && <Ionicons name="checkmark" size={20} color="#3B82F6" />}
-              </TouchableOpacity>
-            ))}
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Active Panic Detail Modal - Same as Security Dashboard */}
-      {selectedPanic && (
-        <Modal visible={!!selectedPanic} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={styles.panicDetailModal}>
-              <View style={styles.panicDetailHeader}>
-                <Text style={styles.panicDetailTitle}>🚨 ACTIVE PANIC</Text>
-                <TouchableOpacity onPress={() => setSelectedPanic(null)}>
-                  <Ionicons name="close" size={28} color="#fff" />
-                </TouchableOpacity>
-              </View>
-              
-              <View style={styles.panicDetailContent}>
-                <Text style={styles.detailName}>{selectedPanic.user_name || selectedPanic.full_name || 'Unknown User'}</Text>
-                <Text style={styles.detailEmail}>{selectedPanic.user_email || 'No email'}</Text>
-                {selectedPanic.user_phone && <Text style={styles.detailPhone}>📞 {selectedPanic.user_phone}</Text>}
-                
-                <View style={styles.detailCategory}>
-                  <Ionicons name={getCategoryInfo(selectedPanic.emergency_category).icon} size={20} color={getCategoryInfo(selectedPanic.emergency_category).color} />
-                  <Text style={[styles.detailCategoryText, { color: getCategoryInfo(selectedPanic.emergency_category).color }]}>
-                    {getCategoryInfo(selectedPanic.emergency_category).label}
-                  </Text>
-                </View>
-                
-                <Text style={styles.detailTime}>
-                  Started: {new Date(selectedPanic.activated_at).toLocaleString()}
-                </Text>
-                
-                {selectedPanic.location?.coordinates && (
-                  <Text style={styles.detailCoords}>
-                    📍 {selectedPanic.location.coordinates[1]?.toFixed(6)}, {selectedPanic.location.coordinates[0]?.toFixed(6)}
-                  </Text>
-                )}
-              </View>
-              
-              <View style={styles.panicDetailActions}>
-                {selectedPanic.location?.coordinates && (
-                  <TouchableOpacity 
-                    style={[styles.actionBtn, { backgroundColor: '#3B82F6' }]}
-                    onPress={() => {
-                      setSelectedPanic(null);
-                      setLocationModal({
-                        visible: true,
-                        lat: selectedPanic.location.coordinates[1],
-                        lng: selectedPanic.location.coordinates[0],
-                        title: `${selectedPanic.user_name || 'User'}'s Location`
-                      });
-                    }}
-                  >
-                    <Ionicons name="map" size={20} color="#fff" />
-                    <Text style={styles.actionBtnText}>View on Map</Text>
-                  </TouchableOpacity>
-                )}
-                
-                {selectedPanic.user_phone && (
-                  <>
-                    <TouchableOpacity 
-                      style={[styles.actionBtn, { backgroundColor: '#10B981' }]}
-                      onPress={() => {
-                        if (Platform.OS === 'web') {
-                          window.open(`tel:${selectedPanic.user_phone}`, '_blank');
-                        }
-                      }}
-                    >
-                      <Ionicons name="call" size={20} color="#fff" />
-                      <Text style={styles.actionBtnText}>Call User</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity 
-                      style={[styles.actionBtn, { backgroundColor: '#8B5CF6' }]}
-                      onPress={() => {
-                        if (Platform.OS === 'web') {
-                          window.open(`sms:${selectedPanic.user_phone}`, '_blank');
-                        }
-                        setSelectedPanic(null);
-                      }}
-                    >
-                      <Ionicons name="chatbubble" size={20} color="#fff" />
-                      <Text style={styles.actionBtnText}>Message User</Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-                
-                <TouchableOpacity 
-                  style={[styles.actionBtn, { backgroundColor: '#334155' }]}
-                  onPress={() => setSelectedPanic(null)}
-                >
-                  <Text style={styles.actionBtnText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
+      ) : (
+        <FlatList
+          data={panics}
+          renderItem={renderPanic}
+          keyExtractor={item => item.id || item._id}
+          contentContainerStyle={styles.list}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Ionicons name="shield-checkmark" size={80} color="#64748B" />
+              <Text style={styles.emptyText}>No active panics</Text>
+              <Text style={styles.emptySubtext}>All clear in your area</Text>
             </View>
-          </View>
-        </Modal>
+          }
+        />
       )}
 
-      {/* Location Map Modal */}
+      {/* Refresh bar */}
+      <View style={styles.refreshBar}>
+        <Ionicons name="sync-outline" size={11} color="#475569" style={{ marginRight: 5 }} />
+        <Text style={styles.refreshBarText}>Live GPS — next update in {countdown}s</Text>
+      </View>
+
       {locationModal && (
-        <Modal visible={locationModal.visible} animationType="slide">
-          <SafeAreaView style={styles.mapModal}>
-            <View style={styles.mapHeader}>
-              <TouchableOpacity onPress={() => setLocationModal(null)}>
-                <Ionicons name="close" size={28} color="#fff" />
+        <LocationMapModal
+          visible={locationModal.visible}
+          onClose={() => setLocationModal(null)}
+          latitude={locationModal.lat}
+          longitude={locationModal.lng}
+          title={locationModal.title}
+        />
+      )}
+
+      {/* Respond modal */}
+      {respondModal && (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setRespondModal(null)}>
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setRespondModal(null)}>
+            <View style={styles.respondModal}>
+              <Text style={styles.respondTitle}>🚨 Respond to Panic</Text>
+              <Text style={styles.respondName}>{getSenderName(respondModal)}</Text>
+              {(respondModal.user_phone || respondModal.phone) && (
+                <Text style={styles.respondPhone}>📞 {respondModal.user_phone || respondModal.phone}</Text>
+              )}
+              <Text style={styles.respondCoords}>
+                📍 {respondModal.latitude?.toFixed(4)}, {respondModal.longitude?.toFixed(4)}
+              </Text>
+
+              <TouchableOpacity
+                style={styles.respondBtn2}
+                onPress={() => {
+                  setRespondModal(null);
+                  setLocationModal({ visible: true, lat: respondModal.latitude, lng: respondModal.longitude, title: `${getSenderName(respondModal)}'s Location` });
+                }}
+              >
+                <Ionicons name="map" size={18} color="#fff" />
+                <Text style={styles.respondBtn2Text}>View on Map</Text>
               </TouchableOpacity>
-              <Text style={styles.mapTitle}>{locationModal.title}</Text>
-              <View style={{ width: 28 }} />
+
+              {(respondModal.user_phone || respondModal.phone) && (
+                <>
+                  <TouchableOpacity
+                    style={[styles.respondBtn2, { backgroundColor: '#10B981' }]}
+                    onPress={() => { setRespondModal(null); callUser(respondModal.user_phone || respondModal.phone); }}
+                  >
+                    <Ionicons name="call" size={18} color="#fff" />
+                    <Text style={styles.respondBtn2Text}>Call User</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.respondBtn2, { backgroundColor: '#8B5CF6' }]}
+                    onPress={() => { setRespondModal(null); Linking.openURL(`sms:${respondModal.user_phone || respondModal.phone}`); }}
+                  >
+                    <Ionicons name="chatbubble" size={18} color="#fff" />
+                    <Text style={styles.respondBtn2Text}>Send Message</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              <TouchableOpacity
+                style={[styles.respondBtn2, { backgroundColor: '#334155' }]}
+                onPress={() => setRespondModal(null)}
+              >
+                <Text style={styles.respondBtn2Text}>Cancel</Text>
+              </TouchableOpacity>
             </View>
-            <NativeMap
-              region={{
-                latitude: locationModal.lat,
-                longitude: locationModal.lng,
-                latitudeDelta: 0.01,
-                longitudeDelta: 0.01
-              }}
-              markerCoords={{ latitude: locationModal.lat, longitude: locationModal.lng }}
-              style={{ flex: 1 }}
-            />
-          </SafeAreaView>
+          </TouchableOpacity>
         </Modal>
       )}
     </SafeAreaView>
   );
 }
 
+// ── Styles ────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#1E293B' },
-  backBtn: { padding: 4 },
-  title: { fontSize: 20, fontWeight: '600', color: '#fff' },
-  headerRight: { flexDirection: 'row', gap: 12 },
-  headerIconBtn: { padding: 4 },
-  filterBanner: { flexDirection: 'row', backgroundColor: '#1E293B', paddingVertical: 10, paddingHorizontal: 20, gap: 10 },
-  filterChip: { fontSize: 13, color: '#94A3B8', backgroundColor: '#0F172A', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 },
-  list: { padding: 16, gap: 12 },
-  panicCard: { backgroundColor: '#1E293B', borderRadius: 16, padding: 16 },
-  activeCard: { borderWidth: 2, borderColor: '#EF4444' },
-  panicTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 },
-  statusText: { fontSize: 11, fontWeight: '700' },
-  categoryBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 },
-  categoryText: { fontSize: 11, fontWeight: '600' },
-  userName: { fontSize: 16, fontWeight: '700', color: '#fff', marginBottom: 2 },
-  userEmail: { fontSize: 13, color: '#94A3B8', marginBottom: 8 },
-  timeInfo: { marginBottom: 4 },
-  timestamp: { fontSize: 12, color: '#64748B', marginBottom: 2 },
-  location: { fontSize: 12, color: '#3B82F6', marginTop: 4 },
-  tapIndicator: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 12, justifyContent: 'flex-end' },
-  tapText: { fontSize: 12, color: '#EF4444', fontWeight: '500' },
-  empty: { alignItems: 'center', paddingVertical: 60 },
-  emptyText: { fontSize: 16, color: '#64748B', marginTop: 12 },
-  // Dropdown Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  dropdownContainer: { backgroundColor: '#1E293B', borderRadius: 20, padding: 20, width: '100%', maxWidth: 320 },
-  dropdownTitle: { fontSize: 18, fontWeight: '600', color: '#fff', marginBottom: 16, textAlign: 'center' },
-  dropdownItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 12, borderRadius: 12, marginBottom: 4 },
-  dropdownItemActive: { backgroundColor: '#3B82F620' },
-  dropdownItemText: { flex: 1, fontSize: 15, color: '#94A3B8' },
-  dropdownItemTextActive: { color: '#fff', fontWeight: '500' },
-  // Panic Detail Modal
-  panicDetailModal: { backgroundColor: '#1E293B', borderRadius: 24, width: '100%', maxWidth: 400, overflow: 'hidden' },
-  panicDetailHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, backgroundColor: '#EF4444' },
-  panicDetailTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
-  panicDetailContent: { padding: 20 },
-  detailName: { fontSize: 22, fontWeight: '700', color: '#fff', marginBottom: 4 },
-  detailEmail: { fontSize: 14, color: '#94A3B8', marginBottom: 4 },
-  detailPhone: { fontSize: 15, color: '#10B981', fontWeight: '600', marginBottom: 12 },
-  detailCategory: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
-  detailCategoryText: { fontSize: 14, fontWeight: '600' },
-  detailTime: { fontSize: 13, color: '#64748B', marginBottom: 4 },
-  detailCoords: { fontSize: 13, color: '#3B82F6', marginTop: 8 },
-  panicDetailActions: { padding: 20, gap: 10, borderTopWidth: 1, borderTopColor: '#334155' },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 14, borderRadius: 12 },
-  actionBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
-  // Map Modal
-  mapModal: { flex: 1, backgroundColor: '#0F172A' },
-  mapHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#1E293B' },
-  mapTitle: { fontSize: 18, fontWeight: '600', color: '#fff' },
+  container:        { flex: 1, backgroundColor: '#0F172A' },
+  header:           { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#1E293B' },
+  backBtn:          { padding: 4 },
+  headerTitle:      { fontSize: 18, fontWeight: 'bold', color: '#fff' },
+  loadingBox:       { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  list:             { padding: 16, paddingBottom: 40 },
+  card:             { backgroundColor: '#1E293B', borderRadius: 16, padding: 16, marginBottom: 16, borderLeftWidth: 4, borderLeftColor: '#EF4444' },
+  topRow:           { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  activeBadge:      { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EF444420', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, gap: 5 },
+  activeBadgeText:  { fontSize: 11, fontWeight: '800', color: '#EF4444' },
+  catBadge:         { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, gap: 5 },
+  catText:          { fontSize: 11, fontWeight: '600' },
+  userRow:          { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 12 },
+  avatar:           { width: 52, height: 52, borderRadius: 26, backgroundColor: '#3B82F620', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  userName:         { fontSize: 16, fontWeight: '700', color: '#fff', marginBottom: 3 },
+  userEmail:        { fontSize: 12, color: '#94A3B8', marginBottom: 2 },
+  userPhone:        { fontSize: 13, color: '#10B981', fontWeight: '600' },
+  userPhoneEmpty:   { fontSize: 12, color: '#475569', fontStyle: 'italic' },
+  details:          { backgroundColor: '#0F172A', borderRadius: 12, padding: 12, marginBottom: 12 },
+  detailRow:        { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  detailText:       { fontSize: 13, color: '#94A3B8' },
+  actions:          { flexDirection: 'row', marginTop: 12 },
+  respondBtn:       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 13, borderRadius: 12, backgroundColor: '#F59E0B' },
+  respondBtnText:   { fontSize: 15, fontWeight: '700', color: '#fff' },
+  empty:            { alignItems: 'center', paddingVertical: 80 },
+  emptyText:        { fontSize: 20, color: '#64748B', marginTop: 16, fontWeight: '600' },
+  emptySubtext:     { fontSize: 14, color: '#475569', marginTop: 4 },
+  refreshBar:       { height: 28, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  refreshBarText:   { fontSize: 11, color: '#475569' },
+  // Respond modal
+  modalOverlay:     { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  respondModal:     { backgroundColor: '#1E293B', borderRadius: 20, padding: 24, width: '100%', maxWidth: 360 },
+  respondTitle:     { fontSize: 17, fontWeight: 'bold', color: '#EF4444', marginBottom: 8, textAlign: 'center' },
+  respondName:      { fontSize: 19, fontWeight: '700', color: '#fff', marginBottom: 4, textAlign: 'center' },
+  respondPhone:     { fontSize: 14, color: '#10B981', marginBottom: 4, textAlign: 'center' },
+  respondCoords:    { fontSize: 12, color: '#94A3B8', marginBottom: 20, textAlign: 'center' },
+  respondBtn2:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#3B82F6', paddingVertical: 13, borderRadius: 12, marginBottom: 10 },
+  respondBtn2Text:  { fontSize: 15, fontWeight: '600', color: '#fff' },
+});
+
+const gpsStyles = StyleSheet.create({
+  container:    { marginBottom: 4, backgroundColor: '#0F172A', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#F59E0B30' },
+  header:       { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 10 },
+  title:        { flex: 1, fontSize: 13, fontWeight: '600', color: '#F59E0B' },
+  countBadge:   { backgroundColor: '#F59E0B', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
+  countText:    { fontSize: 11, fontWeight: '700', color: '#fff' },
+  liveBadge:    { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#10B98120', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 },
+  liveDot:      { width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' },
+  liveText:     { fontSize: 10, fontWeight: '700', color: '#10B981' },
+  row:          { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#1E293B40', paddingHorizontal: 4 },
+  rowLatest:    { backgroundColor: '#3B82F608', borderRadius: 8, paddingHorizontal: 8 },
+  trail:        { width: 20, alignItems: 'center', marginRight: 10, paddingTop: 2 },
+  dot:          { width: 9, height: 9, borderRadius: 5, backgroundColor: '#334155' },
+  dotLatest:    { width: 11, height: 11, borderRadius: 6, backgroundColor: '#10B981' },
+  line:         { width: 2, height: 26, backgroundColor: '#1E293B', marginTop: 2 },
+  content:      { flex: 1 },
+  topRow:       { flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' },
+  latestBadge:  { backgroundColor: '#10B98130', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 5 },
+  latestBadgeText: { color: '#10B981', fontSize: 9, fontWeight: '700' },
+  coords:       { fontSize: 12, color: '#E2E8F0', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  time:         { fontSize: 11, color: '#64748B', marginTop: 2 },
+  accuracy:     { fontSize: 10, color: '#475569', marginTop: 1 },
+  empty:        { alignItems: 'center', paddingVertical: 24 },
+  emptyText:    { color: '#475569', fontSize: 13, marginTop: 8 },
+  emptySubtext: { color: '#334155', fontSize: 11, marginTop: 3 },
 });
