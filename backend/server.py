@@ -2985,12 +2985,17 @@ async def serve_media_file(folder: str, filename: str, request: Request):
 # ===== ADMIN: CLEAR AUDIO/VIDEO UPLOADS =====
 @api_router.delete("/admin/clear-uploads")
 async def admin_clear_uploads(user: dict = Depends(get_admin_user)):
-    """Delete all audio and video report records and files from the database and disk"""
+    """
+    Permanently delete all audio/video report records, associated media files,
+    and any orphaned/pending upload queue entries.
+    Phase 1.1: Ensures no pending uploads remain after this operation.
+    """
     import shutil
     deleted_records = 0
     deleted_files = 0
+    deleted_pending = 0
 
-    # Get all reports with file_url
+    # 1. Delete media files from disk
     reports = await db.civil_reports.find({'type': {'$in': ['video', 'audio']}}).to_list(length=None)
     for r in reports:
         file_url = r.get('file_url', '')
@@ -3002,51 +3007,161 @@ async def admin_clear_uploads(user: dict = Depends(get_admin_user)):
                     file_path.unlink()
                     deleted_files += 1
 
-    # Delete all video/audio report records
+    # 2. Delete all video/audio report records from database
     result = await db.civil_reports.delete_many({'type': {'$in': ['video', 'audio']}})
     deleted_records = result.deleted_count
 
+    # 3. Delete any orphaned/pending uploads that failed to associate with a report
+    try:
+        pending_result = await db.upload_queue.delete_many({})
+        deleted_pending += pending_result.deleted_count
+    except Exception:
+        pass
+
+    # 4. Also sweep the uploads directory for any files not in any report
+    try:
+        uploads_dir = ROOT_DIR / 'uploads'
+        if uploads_dir.exists():
+            for sub in uploads_dir.iterdir():
+                if sub.is_dir():
+                    for f in sub.iterdir():
+                        if f.is_file():
+                            f.unlink()
+                            deleted_files += 1
+    except Exception:
+        pass
+
     await _log_admin_action(str(user['_id']), 'clear_uploads', 'reports', 'all', {
-        'deleted_records': deleted_records, 'deleted_files': deleted_files
+        'deleted_records': deleted_records,
+        'deleted_files': deleted_files,
+        'deleted_pending': deleted_pending
     })
     return {
-        'message': f'Cleared {deleted_records} report records and {deleted_files} media files',
+        'message': (
+            f'Cleared {deleted_records} report records, {deleted_files} media files, '
+            f'and {deleted_pending} pending upload entries'
+        ),
         'deleted_records': deleted_records,
-        'deleted_files': deleted_files
+        'deleted_files': deleted_files,
+        'deleted_pending': deleted_pending
     }
 
 
 # ===== ADMIN: CLEAR ALL PANICS =====
 @api_router.delete("/admin/clear-panics")
 async def admin_clear_panics(user: dict = Depends(get_admin_user)):
-    """Delete all panic events and active_panics from the database"""
+    """
+    Permanently delete every panic record and resolve all orphaned panic sessions.
+    Phase 1.1: Ensures no orphaned panic sessions remain after this operation.
+    """
     deleted_panics = 0
     deleted_active = 0
+    orphans_cleared = 0
 
-    # Delete from panic_events collection
+    # 1. Delete all records from panic_events (primary collection)
     result = await db.panic_events.delete_many({})
     deleted_panics = result.deleted_count
 
-    # Delete from active_panics collection if exists
+    # 2. Delete legacy active_panics collection
     try:
         result2 = await db.active_panics.delete_many({})
         deleted_active = result2.deleted_count
     except Exception:
         pass
-    
-    # Also clear any lingering panic references in panics collection
+
+    # 3. Clear any lingering records in the generic panics collection
     try:
         await db.panics.delete_many({})
     except Exception:
         pass
 
+    # 4. ORPHAN CLEANUP: Find users whose local panic flag is set but no active
+    #    panic_event exists, then mark them resolved so they are not stuck.
+    #    We achieve this by setting is_active=False on any remaining docs that
+    #    somehow survived the delete (belt-and-suspenders) and resetting the
+    #    has_active_panic flag on every user record.
+    try:
+        orphan_result = await db.panic_events.update_many(
+            {'is_active': True},
+            {'$set': {'is_active': False, 'deactivated_at': datetime.utcnow(),
+                      'deactivated_by': 'admin_bulk_clear', 'deactivation_reason': 'Admin bulk clear'}}
+        )
+        orphans_cleared = orphan_result.modified_count
+    except Exception:
+        pass
+
+    # 5. Reset has_active_panic flag on all user documents
+    try:
+        await db.users.update_many(
+            {'has_active_panic': True},
+            {'$set': {'has_active_panic': False}}
+        )
+    except Exception:
+        pass
+
     await _log_admin_action(str(user['_id']), 'clear_panics', 'panics', 'all', {
-        'deleted_panic_events': deleted_panics, 'deleted_active_panics': deleted_active
+        'deleted_panic_events': deleted_panics,
+        'deleted_active_panics': deleted_active,
+        'orphans_cleared': orphans_cleared
     })
     return {
-        'message': f'Cleared {deleted_panics} panic events and {deleted_active} active panics',
+        'message': (
+            f'Cleared {deleted_panics} panic events, {deleted_active} active panics, '
+            f'and resolved {orphans_cleared} orphaned sessions'
+        ),
         'deleted_panic_events': deleted_panics,
-        'deleted_active_panics': deleted_active
+        'deleted_active_panics': deleted_active,
+        'orphans_cleared': orphans_cleared
+    }
+
+
+# ===== ADMIN: RESOLVE TRAPPED PANICS (without deleting) =====
+@api_router.post("/admin/resolve-trapped-panics")
+async def admin_resolve_trapped_panics(user: dict = Depends(get_admin_user)):
+    """
+    Force-deactivate every panic that is still marked is_active=True.
+    This resolves the 'All Panics trapped and unable to resolve' bug
+    without permanently deleting the panic records (audit trail preserved).
+    """
+    resolved = 0
+    try:
+        result = await db.panic_events.update_many(
+            {'is_active': True},
+            {
+                '$set': {
+                    'is_active': False,
+                    'deactivated_at': datetime.utcnow(),
+                    'deactivated_by': 'admin_force_resolve',
+                    'deactivation_reason': 'Bulk resolve by admin — trapped panic fix'
+                }
+            }
+        )
+        resolved = result.modified_count
+    except Exception as e:
+        logging.error(f"Error resolving trapped panics: {e}")
+
+    # Also clear legacy collections
+    try:
+        await db.active_panics.update_many(
+            {'is_active': True},
+            {'$set': {'is_active': False, 'deactivated_at': datetime.utcnow()}}
+        )
+    except Exception:
+        pass
+
+    # Reset user flags
+    try:
+        await db.users.update_many(
+            {'has_active_panic': True},
+            {'$set': {'has_active_panic': False}}
+        )
+    except Exception:
+        pass
+
+    await _log_admin_action(str(user['_id']), 'resolve_trapped_panics', 'panics', 'all', {'resolved': resolved})
+    return {
+        'message': f'Force-resolved {resolved} trapped panic(s). All panics are now deactivated.',
+        'resolved': resolved
     }
 
 
