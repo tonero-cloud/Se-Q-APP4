@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import Constants from 'expo-constants';
 import { getAuthToken, clearAuthData, getUserMetadata } from '../../utils/auth';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 const BACKEND_URL = Constants.expoConfig?.extra?.backendUrl || process.env.EXPO_PUBLIC_BACKEND_URL || 'https://ongoing-dev-22.preview.emergentagent.com';
 
@@ -38,6 +39,13 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [adminEmail, setAdminEmail] = useState('');
   const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Evidence Library date-range shortcut state
+  const [showCalendarModal, setShowCalendarModal] = useState(false);
+  const [calStartDate, setCalStartDate] = useState<Date>(new Date(Date.now() - 7 * 86400000));
+  const [calEndDate, setCalEndDate] = useState<Date>(new Date());
+  const [showStartPicker, setShowStartPicker] = useState(false);
+  const [showEndPicker, setShowEndPicker] = useState(false);
 
   useEffect(() => {
     initializeDashboard();
@@ -89,6 +97,13 @@ export default function AdminDashboard() {
     ]);
   };
 
+  const openEvidenceWithDates = () => {
+    const start = calStartDate.toISOString();
+    const end = calEndDate.toISOString();
+    setShowCalendarModal(false);
+    router.push(`/admin/reports?start_date=${encodeURIComponent(start)}&end_date=${encodeURIComponent(end)}` as any);
+  };
+
   const handleClearUploads = async () => {
     showAlert('Clear All Uploads', 'This will permanently delete all audio and video report files and records. This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
@@ -131,6 +146,32 @@ export default function AdminDashboard() {
         }
       }
     ]);
+  };
+
+  const handleResolveTrappedPanics = async () => {
+    showAlert(
+      '🔓 Resolve Trapped Panics',
+      'This will force-deactivate all currently active panics so they can be resolved. Panic records are preserved for audit purposes.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Resolve All',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const token = await getAuthToken();
+              const res = await axios.post(`${BACKEND_URL}/api/admin/resolve-trapped-panics`, {}, {
+                headers: { Authorization: `Bearer ${token}` }, timeout: 30000
+              });
+              showAlert('✅ Done', res.data?.message || 'All trapped panics resolved.', [{ text: 'OK' }]);
+              loadData();
+            } catch (error: any) {
+              showAlert('Error', error?.response?.data?.detail || 'Failed to resolve panics.', [{ text: 'OK' }]);
+            }
+          }
+        }
+      ]
+    );
   };
 
   const handleResetAllData = async () => {
@@ -293,7 +334,7 @@ export default function AdminDashboard() {
             { label: 'Manage Users', icon: 'people', color: '#3B82F6', route: '/admin/users' },
             { label: 'Security Teams', icon: 'shield-checkmark', color: '#F59E0B', route: '/admin/teams' },
             { label: 'All Panics', icon: 'alert-circle', color: '#EF4444', route: '/admin/panics' },
-            { label: 'Evidence Library', icon: 'videocam', color: '#10B981', route: '/admin/reports' },
+            { label: 'Evidence Library', icon: 'videocam', color: '#10B981', route: '/admin/reports', calendarBtn: true },
             { label: 'Analytics', icon: 'bar-chart', color: '#8B5CF6', route: '/admin/analytics' },
             { label: 'Broadcast', icon: 'megaphone', color: '#EC4899', route: '/admin/broadcast' },
             { label: 'Security Map', icon: 'map', color: '#14B8A6', route: '/admin/security-map' },
@@ -303,13 +344,20 @@ export default function AdminDashboard() {
             { label: 'Escort Sessions', icon: 'navigate', color: '#10B981', route: '/security/escort-sessions' },
             { label: 'Search & Export', icon: 'search', color: '#0EA5E9', route: '/admin/search' },
             { label: 'Audit Log', icon: 'document-text', color: '#475569', route: '/admin/audit-log' },
-          ].map((a) => (
-            <TouchableOpacity key={a.label} style={styles.actionCard} onPress={() => router.push(a.route as any)}>
-              <View style={[styles.actionIcon, { backgroundColor: `${a.color}20` }]}>
-                <Ionicons name={a.icon as any} size={26} color={a.color} />
-              </View>
-              <Text style={styles.actionText}>{a.label}</Text>
-            </TouchableOpacity>
+          ].map((a: any) => (
+            <View key={a.label} style={styles.actionCard}>
+              <TouchableOpacity style={{ alignItems: 'center', flex: 1 }} onPress={() => router.push(a.route as any)}>
+                <View style={[styles.actionIcon, { backgroundColor: `${a.color}20` }]}>
+                  <Ionicons name={a.icon as any} size={26} color={a.color} />
+                </View>
+                <Text style={styles.actionText}>{a.label}</Text>
+              </TouchableOpacity>
+              {a.calendarBtn && (
+                <TouchableOpacity style={styles.calIconBtn} onPress={() => setShowCalendarModal(true)}>
+                  <Ionicons name="calendar" size={16} color="#10B981" />
+                </TouchableOpacity>
+              )}
+            </View>
           ))}
 
           {/* Clear Uploads — Danger Zone */}
@@ -318,6 +366,14 @@ export default function AdminDashboard() {
               <Ionicons name="trash" size={26} color="#EF4444" />
             </View>
             <Text style={[styles.actionText, { color: '#EF4444' }]}>Clear All Uploads</Text>
+          </TouchableOpacity>
+
+          {/* Resolve Trapped Panics — Phase 1.1 fix */}
+          <TouchableOpacity style={styles.dangerCard} onPress={handleResolveTrappedPanics}>
+            <View style={[styles.actionIcon, { backgroundColor: '#F59E0B20' }]}>
+              <Ionicons name="lock-open" size={26} color="#F59E0B" />
+            </View>
+            <Text style={[styles.actionText, { color: '#F59E0B' }]}>Resolve Trapped Panics</Text>
           </TouchableOpacity>
 
           {/* Clear Panics — Danger Zone */}
@@ -339,6 +395,109 @@ export default function AdminDashboard() {
 
         <View style={{ height: 32 }} />
       </ScrollView>
+
+      {/* ── Evidence Library Calendar Modal ───────────────────────────── */}
+      <Modal
+        visible={showCalendarModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowCalendarModal(false)}
+      >
+        <View style={styles.calModalOverlay}>
+          <View style={styles.calModal}>
+            <View style={styles.calModalHeader}>
+              <Ionicons name="calendar" size={22} color="#10B981" />
+              <Text style={styles.calModalTitle}>Evidence Library — Date Filter</Text>
+              <TouchableOpacity onPress={() => setShowCalendarModal(false)}>
+                <Ionicons name="close" size={24} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.calLabel}>Start Date</Text>
+            <TouchableOpacity
+              style={styles.calDateBtn}
+              onPress={() => setShowStartPicker(true)}
+            >
+              <Ionicons name="calendar-outline" size={18} color="#3B82F6" />
+              <Text style={styles.calDateText}>
+                {calStartDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+              </Text>
+            </TouchableOpacity>
+            {showStartPicker && (
+              <DateTimePicker
+                value={calStartDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                maximumDate={calEndDate}
+                onChange={(_: any, d?: Date) => {
+                  setShowStartPicker(false);
+                  if (d) setCalStartDate(d);
+                }}
+              />
+            )}
+
+            <Text style={styles.calLabel}>End Date</Text>
+            <TouchableOpacity
+              style={styles.calDateBtn}
+              onPress={() => setShowEndPicker(true)}
+            >
+              <Ionicons name="calendar-outline" size={18} color="#3B82F6" />
+              <Text style={styles.calDateText}>
+                {calEndDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+              </Text>
+            </TouchableOpacity>
+            {showEndPicker && (
+              <DateTimePicker
+                value={calEndDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                minimumDate={calStartDate}
+                maximumDate={new Date()}
+                onChange={(_: any, d?: Date) => {
+                  setShowEndPicker(false);
+                  if (d) setCalEndDate(d);
+                }}
+              />
+            )}
+
+            {/* Quick range presets */}
+            <Text style={styles.calLabel}>Quick Range</Text>
+            <View style={styles.calPresets}>
+              {[
+                { label: 'Today',     days: 0 },
+                { label: '7 Days',    days: 7 },
+                { label: '30 Days',   days: 30 },
+                { label: '90 Days',   days: 90 },
+              ].map(p => (
+                <TouchableOpacity
+                  key={p.label}
+                  style={styles.calPresetBtn}
+                  onPress={() => {
+                    const end = new Date();
+                    const start = new Date(Date.now() - p.days * 86400000);
+                    setCalStartDate(start);
+                    setCalEndDate(end);
+                  }}
+                >
+                  <Text style={styles.calPresetText}>{p.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity style={styles.calApplyBtn} onPress={openEvidenceWithDates}>
+              <Ionicons name="search" size={18} color="#fff" />
+              <Text style={styles.calApplyText}>Search Evidence Library</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.calCancelBtn}
+              onPress={() => router.push('/admin/reports' as any)}
+            >
+              <Text style={styles.calCancelText}>View All (No Filter)</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -384,8 +543,25 @@ const styles = StyleSheet.create({
   categoryBarFill: { height: '100%', borderRadius: 4 },
   categoryCount: { width: 26, fontSize: 12, fontWeight: '700', textAlign: 'right' },
   actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  actionCard: { width: '31%', backgroundColor: '#1E293B', borderRadius: 14, padding: 12, alignItems: 'center', gap: 8 },
+  actionCard: { width: '31%', backgroundColor: '#1E293B', borderRadius: 14, padding: 12, alignItems: 'center', gap: 8, position: 'relative' },
   dangerCard: { width: '31%', backgroundColor: '#1E293B', borderRadius: 14, padding: 12, alignItems: 'center', gap: 8, borderWidth: 1, borderColor: '#EF444440' },
   actionIcon: { width: 46, height: 46, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   actionText: { fontSize: 11, color: '#94A3B8', textAlign: 'center', fontWeight: '500' },
+
+  // Calendar modal styles
+  calIconBtn: { position: 'absolute', top: 6, right: 6, backgroundColor: '#10B98120', borderRadius: 10, padding: 4 },
+  calModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  calModal: { backgroundColor: '#1E293B', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 40 },
+  calModalHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 20 },
+  calModalTitle: { flex: 1, fontSize: 16, fontWeight: '600', color: '#fff' },
+  calLabel: { fontSize: 12, fontWeight: '600', color: '#64748B', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, marginTop: 16 },
+  calDateBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#0F172A', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#334155' },
+  calDateText: { fontSize: 15, color: '#fff', fontWeight: '500' },
+  calPresets: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  calPresetBtn: { backgroundColor: '#0F172A', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#334155' },
+  calPresetText: { fontSize: 13, color: '#94A3B8', fontWeight: '500' },
+  calApplyBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#10B981', paddingVertical: 16, borderRadius: 14, marginTop: 24 },
+  calApplyText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  calCancelBtn: { alignItems: 'center', paddingVertical: 14, marginTop: 8 },
+  calCancelText: { fontSize: 14, color: '#64748B' },
 });
